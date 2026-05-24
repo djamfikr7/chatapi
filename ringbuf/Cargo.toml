@@ -1,0 +1,11 @@
+[package]
+name = "chatapi-ringbuf"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rtrb.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true

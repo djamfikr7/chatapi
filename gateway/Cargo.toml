@@ -1,0 +1,26 @@
+[package]
+name = "chatapi-gateway"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gateway"
+path = "src/main.rs"
+
+[dependencies]
+chatapi-shared = { path = "../shared" }
+chatapi-ringbuf = { path = "../ringbuf" }
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+hyper.workspace = true
+chrono.workspace = true

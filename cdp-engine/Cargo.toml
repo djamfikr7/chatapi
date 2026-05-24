@@ -1,0 +1,23 @@
+[package]
+name = "chatapi-cdp-engine"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cdp-engine"
+path = "src/main.rs"
+
+[dependencies]
+chatapi-shared = { path = "../shared" }
+chatapi-ringbuf = { path = "../ringbuf" }
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+uuid.workspace = true
