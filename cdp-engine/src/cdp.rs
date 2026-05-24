@@ -3,11 +3,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
-use tokio::net::UnixStream;
 use tokio::sync::oneshot;
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 // We can't easily do Unix socket + tungstenite directly, so we connect via ws:// to the
 // debug WebSocket URL obtained from Chrome's HTTP endpoint. The actual Unix socket optimization

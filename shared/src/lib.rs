@@ -77,7 +77,7 @@ impl axum::response::IntoResponse for ChatApiError {
             "error": {
                 "message": message,
                 "type": code,
-                "code": null::<()>,
+                "code": serde_json::Value::Null,
             }
         });
 
@@ -316,6 +316,7 @@ pub type Result<T> = std::result::Result<T, ChatApiError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
 
     #[test]
     fn test_request_deserialize() {
@@ -469,7 +470,7 @@ mod tests {
     fn test_generate_id_format() {
         let id = generate_id();
         assert!(id.starts_with("chatcmpl-"));
-        assert_eq!(id.len(), 10 + 24); // "chatcmpl-" + 24 chars
+        assert_eq!(id.len(), 9 + 24); // "chatcmpl-" + 24 chars
     }
 
     #[test]

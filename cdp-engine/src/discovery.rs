@@ -3,7 +3,7 @@ use reqwest;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Chrome writes its active debug port and WebSocket URL to this file
 /// inside each profile directory.

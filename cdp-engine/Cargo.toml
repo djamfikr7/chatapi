@@ -21,3 +21,4 @@ thiserror.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 uuid.workspace = true
+reqwest.workspace = true

@@ -12,7 +12,7 @@ use crate::cdp::{CdpConnection, CdpEvent, WebSocketFrame};
 const SILENCE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Maximum time to wait for any response to start arriving.
-const RESPONSE_START_TIMEOUT: Duration = Duration::Duration::from_secs(30);
+const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Humanized typing jitter range in milliseconds.
 const JITTER_MIN_MS: u64 = 2;
@@ -183,8 +183,13 @@ impl ChatEngine {
                 .await?;
 
             // Humanized jitter: 2-7ms between keystrokes
+            // Simple pseudo-random using timestamp nanos
+            let jitter_nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos();
             let jitter = JITTER_MIN_MS
-                + (rand::random::<u64>() % (JITTER_MAX_MS - JITTER_MIN_MS + 1));
+                + ((jitter_nanos as u64) % (JITTER_MAX_MS - JITTER_MIN_MS + 1));
             sleep(Duration::from_millis(jitter)).await;
         }
         Ok(())
