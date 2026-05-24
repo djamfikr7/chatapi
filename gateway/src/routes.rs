@@ -1,25 +1,23 @@
 use axum::{
     extract::State,
-    http::StatusCode,
     response::{
-        sse::{Event, Sse},
+        sse::Sse,
         IntoResponse, Json, Response,
     },
 };
 use chatapi_shared::{
-    generate_id, now_epoch, ChatApiError, ChatCompletionRequest, ChatCompletionResponse,
-    ChatMessage, Choice, Usage,
+    generate_id, now_epoch, ChatApiError, ChatCompletionRequest,
+    ChatCompletionResponse, ChatMessage,
 };
-use futures_util::Stream;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::state::AppState;
 use crate::streaming::SseStream;
 
 /// POST /v1/chat/completions
 pub async fn chat_completions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, ChatApiError> {
     // Validate request
@@ -30,7 +28,7 @@ pub async fn chat_completions(
     }
 
     let request_id = generate_id();
-    let created = now_epoch();
+    let _created = now_epoch();
 
     info!(
         request_id = %request_id,
@@ -45,13 +43,16 @@ pub async fn chat_completions(
         let (tx, rx) = mpsc::channel::<String>(64);
 
         // Spawn mock response task (will be replaced by CDP engine integration)
-        let last_message = request.messages.last().map(|m| m.content.clone()).unwrap_or_default();
-        let state_clone = state.clone();
+        let last_message = request
+            .messages
+            .last()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
         tokio::spawn(async move {
-            simulate_streaming_response(state_clone, tx, &last_message).await;
+            simulate_streaming_response(tx, &last_message).await;
         });
 
-        let sse_stream = SseStream::new(rx, request_id.clone(), request.model.clone(), created);
+        let sse_stream = SseStream::new(rx, request_id.clone(), request.model.clone());
         let sse = Sse::new(sse_stream).keep_alive(
             axum::response::sse::KeepAlive::new()
                 .interval(std::time::Duration::from_secs(15))
@@ -61,29 +62,20 @@ pub async fn chat_completions(
         Ok(sse.into_response())
     } else {
         // Return complete response
-        let response_text = simulate_complete_response(&state, &request.messages).await;
-        let prompt_tokens = request.messages.iter().map(|m| estimate_tokens(&m.content)).sum::<u32>();
+        let response_text = simulate_complete_response(&request.messages).await;
+        let prompt_tokens: u32 = request
+            .messages
+            .iter()
+            .map(|m| estimate_tokens(&m.content))
+            .sum();
         let completion_tokens = estimate_tokens(&response_text);
 
-        let response = ChatCompletionResponse {
-            id: request_id,
-            object: "chat.completion".to_string(),
-            created,
-            model: request.model,
-            choices: vec![Choice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: response_text,
-                },
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
-            },
-        };
+        let response = ChatCompletionResponse::new(
+            request.model,
+            response_text,
+            prompt_tokens,
+            completion_tokens,
+        );
 
         Ok(Json(response).into_response())
     }
@@ -103,7 +95,7 @@ pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
 
 // ── Mock implementations (to be replaced by CDP engine) ────────────────
 
-async fn simulate_streaming_response(state: AppState, tx: mpsc::Sender<String>, prompt: &str) {
+async fn simulate_streaming_response(tx: mpsc::Sender<String>, prompt: &str) {
     let response = mock_llm_response(prompt);
     let tokens = tokenize_for_streaming(&response);
 
@@ -116,13 +108,12 @@ async fn simulate_streaming_response(state: AppState, tx: mpsc::Sender<String>, 
     }
 }
 
-async fn simulate_complete_response(state: &AppState, messages: &[ChatMessage]) -> String {
+async fn simulate_complete_response(messages: &[ChatMessage]) -> String {
     let last = messages.last().map(|m| m.content.as_str()).unwrap_or("");
     mock_llm_response(last)
 }
 
 fn mock_llm_response(prompt: &str) -> String {
-    // Simple mock that echoes back a contextual response
     let lower = prompt.to_lowercase();
     if lower.contains("hello") || lower.contains("hi") {
         "Hello! I'm a mock DeepSeek assistant running through the ChatAPI bridge. How can I help you today?".to_string()
@@ -131,12 +122,15 @@ fn mock_llm_response(prompt: &str) -> String {
     } else if lower.contains("test") {
         "Test received and processed. The gateway is functioning correctly. Streaming pipeline, ring buffer, and SSE encoding are operational.".to_string()
     } else {
-        format!("I received your message: \"{}\". This is a mock response from the ChatAPI gateway. Once the CDP engine is connected, this will be replaced with actual DeepSeek Chat responses.", prompt)
+        format!(
+            "I received your message: \"{}\". This is a mock response from the ChatAPI gateway. \
+             Once the CDP engine is connected, this will be replaced with actual DeepSeek Chat responses.",
+            prompt
+        )
     }
 }
 
 fn tokenize_for_streaming(text: &str) -> Vec<String> {
-    // Split into word-sized tokens for realistic streaming
     let mut tokens = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
@@ -153,6 +147,5 @@ fn tokenize_for_streaming(text: &str) -> Vec<String> {
 }
 
 fn estimate_tokens(text: &str) -> u32 {
-    // Rough estimate: ~4 chars per token
     (text.len() as u32 + 3) / 4
 }

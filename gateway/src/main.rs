@@ -1,9 +1,8 @@
 use axum::{routing::{get, post}, Router};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use chatapi_ringbuf::channel;
+use chatapi_ringbuf::CommandChannel;
 
-mod lib; // ensure lib.rs is compiled
 use chatapi_gateway::routes;
 use chatapi_gateway::state::AppState;
 
@@ -16,11 +15,11 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Create ring buffer for IPC with CDP engine (256KB)
-    let (producer, consumer) = channel(256 * 1024);
+    // Create command channel for IPC with CDP engine
+    let (cdp_cmd_tx, _cdp_evt_rx) = CommandChannel::new(64);
 
     // Create application state
-    let state = AppState::new(producer, consumer);
+    let state = AppState::new(cdp_cmd_tx);
 
     // CORS layer
     let cors = CorsLayer::new()
@@ -35,8 +34,9 @@ async fn main() -> anyhow::Result<()> {
         .layer(cors)
         .with_state(state);
 
-    // Bind and serve
-    let bind = "0.0.0.0:3000";
+    // Bind and serve (configurable via CHATAPI_PORT env var)
+    let port = std::env::var("CHATAPI_PORT").unwrap_or_else(|_| "8090".to_string());
+    let bind = format!("0.0.0.0:{}", port);
     tracing::info!("Gateway listening on {}", bind);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;

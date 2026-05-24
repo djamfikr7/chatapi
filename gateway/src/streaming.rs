@@ -2,65 +2,45 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use futures_util::Stream;
 use tokio::sync::mpsc;
-use chatapi_shared::{ChatCompletionChunk, ChunkChoice, Delta};
+use chatapi_shared::ChatCompletionChunk;
 
 /// Wraps a token receiver and formats each token as an OpenAI-compatible SSE chunk.
 pub struct SseStream {
     rx: mpsc::Receiver<String>,
     id: String,
     model: String,
-    created: i64,
-    done: bool,
     /// Buffer for coalescing small chunks
     buffer: String,
+    /// Pending events to emit on next poll
+    pending: Vec<String>,
+    /// Whether the stream has finished (stop + [DONE] sent)
+    done: bool,
 }
 
 impl SseStream {
-    pub fn new(rx: mpsc::Receiver<String>, id: String, model: String, created: i64) -> Self {
+    pub fn new(rx: mpsc::Receiver<String>, id: String, model: String) -> Self {
         Self {
             rx,
             id,
             model,
-            created,
-            done: false,
             buffer: String::new(),
+            pending: Vec::new(),
+            done: false,
         }
     }
 
     fn format_chunk(&self, content: &str) -> String {
-        let chunk = ChatCompletionChunk {
-            id: self.id.clone(),
-            object: "chat.completion.chunk".to_string(),
-            created: self.created,
-            model: self.model.clone(),
-            choices: vec![ChunkChoice {
-                index: 0,
-                delta: Delta {
-                    role: None,
-                    content: Some(content.to_string()),
-                },
-                finish_reason: None,
-            }],
-        };
+        let chunk = ChatCompletionChunk::new_delta(&self.model, &self.id, content);
         serde_json::to_string(&chunk).unwrap_or_default()
     }
 
     fn format_stop_chunk(&self) -> String {
-        let chunk = ChatCompletionChunk {
-            id: self.id.clone(),
-            object: "chat.completion.chunk".to_string(),
-            created: self.created,
-            model: self.model.clone(),
-            choices: vec![ChunkChoice {
-                index: 0,
-                delta: Delta {
-                    role: None,
-                    content: None,
-                },
-                finish_reason: Some("stop".to_string()),
-            }],
-        };
+        let chunk = ChatCompletionChunk::new_finish(&self.model, &self.id);
         serde_json::to_string(&chunk).unwrap_or_default()
+    }
+
+    fn emit_event(data: String) -> Result<axum::response::sse::Event, std::convert::Infallible> {
+        Ok(axum::response::sse::Event::default().data(data))
     }
 }
 
@@ -68,8 +48,18 @@ impl Stream for SseStream {
     type Item = Result<axum::response::sse::Event, std::convert::Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // If stream is done, return None
         if self.done {
             return Poll::Ready(None);
+        }
+
+        // Drain pending events first
+        if !self.pending.is_empty() {
+            let data = self.pending.remove(0);
+            if self.pending.is_empty() {
+                self.done = true;
+            }
+            return Poll::Ready(Some(Self::emit_event(data)));
         }
 
         loop {
@@ -82,46 +72,42 @@ impl Stream for SseStream {
                         // Flush immediately for large chunks
                         let data = self.format_chunk(&self.buffer);
                         self.buffer.clear();
-                        let event = axum::response::sse::Event::default().data(data);
-                        return Poll::Ready(Some(Ok(event)));
+                        return Poll::Ready(Some(Self::emit_event(data)));
                     }
                     // Small chunk — keep buffering, will flush on next poll or completion
                     continue;
                 }
                 Poll::Ready(None) => {
                     // Channel closed — stream is done
-                    self.done = true;
+                    let mut events = Vec::new();
 
                     // Flush any remaining buffer
-                    let mut events = Vec::new();
                     if !self.buffer.is_empty() {
-                        let data = self.format_chunk(&self.buffer);
+                        events.push(self.format_chunk(&self.buffer));
                         self.buffer.clear();
-                        events.push(Ok(axum::response::sse::Event::default().data(data)));
                     }
 
                     // Send stop chunk
-                    let stop_data = self.format_stop_chunk();
-                    events.push(Ok(axum::response::sse::Event::default().data(stop_data)));
+                    events.push(self.format_stop_chunk());
 
                     // Send [DONE]
-                    events.push(Ok(axum::response::sse::Event::default().data("[DONE]")));
+                    events.push("[DONE]".to_string());
 
-                    if let Some(first) = events.into_iter().next() {
-                        // Store remaining events to emit — for simplicity, batch them
-                        // In practice we'd use a VecDeque, but for the final flush
-                        // we can send them all as one combined event
-                        return Poll::Ready(Some(first));
+                    if events.is_empty() {
+                        return Poll::Ready(None);
                     }
-                    return Poll::Ready(None);
+
+                    // Return first, stash the rest
+                    let first = events.remove(0);
+                    self.pending = events;
+                    return Poll::Ready(Some(Self::emit_event(first)));
                 }
                 Poll::Pending => {
                     // Check if we have buffered data to flush (coalescing timeout)
                     if !self.buffer.is_empty() {
                         let data = self.format_chunk(&self.buffer);
                         self.buffer.clear();
-                        let event = axum::response::sse::Event::default().data(data);
-                        return Poll::Ready(Some(Ok(event)));
+                        return Poll::Ready(Some(Self::emit_event(data)));
                     }
                     return Poll::Pending;
                 }
