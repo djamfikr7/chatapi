@@ -118,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(routes::chat_completions))
         .route("/v1/models", get(routes::list_models))
+        .route("/v1/providers", get(routes::list_providers))
         // Health
         .route("/health", get(routes::health))
         // Session management

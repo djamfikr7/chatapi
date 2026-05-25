@@ -267,17 +267,56 @@ async fn handle_non_streaming(
     Ok(Json(resp).into_response())
 }
 
-/// GET /v1/models
+/// GET /v1/models — list all available models from all providers.
 pub async fn list_models(State(state): State<AppState>) -> Json<serde_json::Value> {
     let config = state.config.read().await;
+    let mut models = vec![serde_json::json!({
+        "id": config.target.model,
+        "object": "model",
+        "created": 0,
+        "owned_by": "default",
+    })];
+
+    // Add models from configured providers
+    for provider in &config.models.providers {
+        for model in &provider.models {
+            models.push(serde_json::json!({
+                "id": model.id,
+                "object": "model",
+                "created": 0,
+                "owned_by": provider.name,
+                "provider": provider.name,
+                "endpoint": provider.endpoint,
+            }));
+        }
+    }
+
     Json(serde_json::json!({
         "object": "list",
-        "data": [{
-            "id": config.target.model,
-            "object": "model",
-            "created": 0,
-            "owned_by": "chatapi",
-        }]
+        "data": models,
+    }))
+}
+
+/// GET /v1/providers — list all configured model providers.
+pub async fn list_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let config = state.config.read().await;
+    let providers: Vec<serde_json::Value> = config.models.providers.iter().map(|p| {
+        serde_json::json!({
+            "name": p.name,
+            "endpoint": p.endpoint,
+            "models": p.models.iter().map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "max_tokens": m.max_tokens,
+                })
+            }).collect::<Vec<_>>(),
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "providers": providers,
+        "default_model": config.target.model,
     }))
 }
 

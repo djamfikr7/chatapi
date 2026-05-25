@@ -16,6 +16,8 @@ pub struct ChatApiConfig {
     pub sessions: SessionsSection,
     #[serde(default)]
     pub dashboard: DashboardSection,
+    #[serde(default)]
+    pub models: ModelsSection,
 }
 
 // ── Target section ──────────────────────────────────────────────────
@@ -107,6 +109,32 @@ impl Default for SessionsSection {
 pub struct DashboardSection {
     pub port: Option<u16>,
     pub theme: Option<String>,
+}
+
+// ── Models section (multi-provider support) ─────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelsSection {
+    #[serde(default)]
+    pub providers: Vec<ModelProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelProvider {
+    pub name: String,
+    pub endpoint: String,
+    pub api_key_env: String,
+    #[serde(default)]
+    pub models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelEntry {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 // ── Default functions ───────────────────────────────────────────────
