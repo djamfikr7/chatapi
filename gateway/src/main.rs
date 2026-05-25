@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use axum::{routing::{get, post, delete, put}, Router};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use chatapi_mcp::{McpClient, McpToolProvider};
@@ -55,6 +56,13 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(9222);
 
+        // Auto-launch Chrome if LAUNCH_CHROME=1
+        if std::env::var("LAUNCH_CHROME").ok().as_deref() == Some("1") {
+            if let Err(e) = launch_chrome(chrome_port).await {
+                tracing::warn!(error = %e, "Failed to auto-launch Chrome");
+            }
+        }
+
         match BrowserTarget::from_port(chrome_port, config.target.model.clone()).await {
             Ok(browser) => {
                 tracing::info!(port = chrome_port, "Target: Browser (CDP connected)");
@@ -99,6 +107,12 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Static file serving for frontend build
+    let frontend_dir = std::env::var("CHATAPI_FRONTEND_DIR")
+        .unwrap_or_else(|_| "frontend/dist".to_string());
+    let serve_frontend = ServeDir::new(&frontend_dir)
+        .not_found_service(ServeDir::new(&frontend_dir)); // SPA fallback
+
     // Build router
     let app = Router::new()
         // OpenAI-compatible endpoints
@@ -119,12 +133,15 @@ async fn main() -> anyhow::Result<()> {
         // WebSocket
         .route("/ws", get(ws::ws_handler))
         .layer(cors)
-        .with_state(state);
+        .with_state(state)
+        // Serve frontend static files (must be last — catches all non-API routes)
+        .fallback_service(serve_frontend);
 
     // Bind and serve
     let port = std::env::var("CHATAPI_PORT").unwrap_or_else(|_| "8090".to_string());
     let bind = format!("0.0.0.0:{}", port);
     tracing::info!("Gateway listening on {}", bind);
+    tracing::info!("Frontend: http://localhost:{}", port);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
@@ -133,6 +150,36 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     tracing::info!("Gateway shut down gracefully");
+    Ok(())
+}
+
+/// Launch Chrome with remote debugging enabled.
+async fn launch_chrome(port: u16) -> anyhow::Result<()> {
+    use tokio::process::Command;
+
+    let chrome_bin = if cfg!(target_os = "linux") {
+        "google-chrome"
+    } else if cfg!(target_os = "macos") {
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    } else {
+        "chrome.exe"
+    };
+
+    tracing::info!(port = port, binary = chrome_bin, "Launching Chrome with remote debugging");
+
+    Command::new(chrome_bin)
+        .arg(format!("--remote-debugging-port={}", port))
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-background-networking")
+        .arg("--disable-sync")
+        .arg("--disable-translate")
+        .arg("--metrics-recording-only")
+        .arg("--safebrowsing-disable-auto-update")
+        .spawn()?;
+
+    // Wait a moment for Chrome to start
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     Ok(())
 }
 
