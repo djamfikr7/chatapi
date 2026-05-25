@@ -117,6 +117,7 @@ pub trait TargetProvider: Send + Sync {
 pub struct SessionSummary {
     pub id: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
     pub message_count: usize,
     pub model: String,
 }

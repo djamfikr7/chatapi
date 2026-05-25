@@ -1,7 +1,16 @@
-use axum::{routing::{get, post}, Router};
+use std::path::Path;
+use std::sync::Arc;
+use axum::{routing::{get, post, delete, put}, Router};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use chatapi_ringbuf::CommandChannel;
+
+use chatapi_mcp::{McpClient, McpToolProvider};
+use chatapi_rules::ChatApiConfig;
+use chatapi_sessions::{SessionManager, MemoryStore, FileStore};
+use chatapi_targets::TargetRouter;
+use chatapi_tools::ToolRegistry;
+use chatapi_shared::target::TargetConfig;
+use chatapi_shared::target::Target as TargetKind;
 
 use chatapi_gateway::routes;
 use chatapi_gateway::state::AppState;
@@ -15,11 +24,51 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Create command channel for IPC with CDP engine
-    let (cdp_cmd_tx, _cdp_evt_rx) = CommandChannel::new(64);
+    // Load config
+    let config_path = std::env::var("CHATAPI_CONFIG")
+        .unwrap_or_else(|_| ".chatapi/config.toml".to_string());
+    let config = ChatApiConfig::load_or_default(Path::new(&config_path));
+    tracing::info!(mode = %config.target.mode, model = %config.target.model, "Loaded config");
+
+    // Build target router from config
+    let target_kind = match config.target.mode.as_str() {
+        "api" => TargetKind::Api,
+        _ => TargetKind::Browser,
+    };
+    let api_key = config.target.api.as_ref().and_then(|a| {
+        std::env::var(&a.api_key_env).ok()
+    });
+    let api_endpoint = config.target.api.as_ref()
+        .map(|a| a.endpoint.clone())
+        .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+
+    let target_config = TargetConfig {
+        target: target_kind,
+        api_endpoint,
+        api_key,
+        model: config.target.model.clone(),
+    };
+    let target = TargetRouter::new(&target_config);
+
+    // Build tool registry with built-in + MCP tools
+    let mut tools = build_tool_registry();
+    let mcp_clients = connect_mcp_servers(&config, &mut tools).await;
+
+    // Build session manager
+    let store: Box<dyn chatapi_shared::traits::SessionStore> = if config.sessions.store == "file" {
+        let path = config.sessions.path.as_deref().unwrap_or(".chatapi/sessions");
+        let fs = FileStore::new(path);
+        fs.init().await?;
+        tracing::info!(path = %path, "Using file-backed session store");
+        Box::new(fs)
+    } else {
+        tracing::info!("Using in-memory session store");
+        Box::new(MemoryStore::new())
+    };
+    let sessions = SessionManager::new(store);
 
     // Create application state
-    let state = AppState::new(cdp_cmd_tx);
+    let state = AppState::new(config, target, tools, sessions, mcp_clients);
 
     // CORS layer
     let cors = CorsLayer::new()
@@ -29,12 +78,25 @@ async fn main() -> anyhow::Result<()> {
 
     // Build router
     let app = Router::new()
+        // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(routes::chat_completions))
+        .route("/v1/models", get(routes::list_models))
+        // Health
         .route("/health", get(routes::health))
+        // Session management
+        .route("/sessions", get(routes::list_sessions))
+        .route("/sessions", post(routes::create_session))
+        .route("/sessions/{session_id}", get(routes::get_session))
+        .route("/sessions/{session_id}", delete(routes::delete_session))
+        // Tools
+        .route("/tools", get(routes::list_tools))
+        // Config
+        .route("/config", get(routes::get_config))
+        .route("/config", put(routes::update_config))
         .layer(cors)
         .with_state(state);
 
-    // Bind and serve (configurable via CHATAPI_PORT env var)
+    // Bind and serve
     let port = std::env::var("CHATAPI_PORT").unwrap_or_else(|_| "8090".to_string());
     let bind = format!("0.0.0.0:{}", port);
     tracing::info!("Gateway listening on {}", bind);
@@ -47,6 +109,60 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Gateway shut down gracefully");
     Ok(())
+}
+
+fn build_tool_registry() -> ToolRegistry {
+    use chatapi_tools::{file_ops, terminal, git_ops, search};
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(file_ops::ReadFile));
+    registry.register(Box::new(file_ops::WriteFile));
+    registry.register(Box::new(file_ops::EditFile));
+    registry.register(Box::new(file_ops::ListDir));
+    registry.register(Box::new(terminal::RunCommand));
+    registry.register(Box::new(terminal::GetDiagnostics));
+    registry.register(Box::new(git_ops::GitStatus));
+    registry.register(Box::new(git_ops::GitDiff));
+    registry.register(Box::new(git_ops::GitCommit));
+    registry.register(Box::new(search::GrepCode));
+    registry
+}
+
+/// Connect to configured MCP servers and register their tools.
+async fn connect_mcp_servers(
+    config: &ChatApiConfig,
+    tools: &mut ToolRegistry,
+) -> Vec<Arc<McpClient>> {
+    let mcp_config = match config.target.mcp.as_ref() {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+
+    let mut clients = Vec::new();
+    for server in &mcp_config.servers {
+        match McpClient::spawn(&server.name, &server.command, &server.args, &server.env).await {
+            Ok(client) => {
+                let client = Arc::new(client);
+                match client.list_tools().await {
+                    Ok(mcp_tools) => {
+                        tracing::info!(server = %server.name, tool_count = mcp_tools.len(), "MCP server connected");
+                        for tool in mcp_tools {
+                            tracing::debug!(tool = %tool.name, server = %server.name, "Registering MCP tool");
+                            tools.register(Box::new(McpToolProvider::new(client.clone(), tool)));
+                        }
+                        clients.push(client);
+                    }
+                    Err(e) => {
+                        tracing::error!(server = %server.name, error = %e, "Failed to list MCP tools");
+                        client.shutdown().await;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(server = %server.name, error = %e, "Failed to connect MCP server");
+            }
+        }
+    }
+    clients
 }
 
 async fn shutdown_signal() {

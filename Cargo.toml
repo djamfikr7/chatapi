@@ -5,6 +5,11 @@ members = [
     "cdp-engine",
     "ringbuf",
     "shared",
+    "rules",
+    "tools",
+    "targets",
+    "sessions",
+    "mcp",
 ]
 
 [workspace.package]
@@ -30,7 +35,8 @@ futures-util = "0.3"
 rtrb = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 hyper = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+regex = "1"
 
 [profile.release]
 lto = true

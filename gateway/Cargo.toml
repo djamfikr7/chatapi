@@ -10,6 +10,11 @@ path = "src/main.rs"
 [dependencies]
 chatapi-shared = { path = "../shared" }
 chatapi-ringbuf = { path = "../ringbuf" }
+chatapi-rules = { path = "../rules" }
+chatapi-sessions = { path = "../sessions" }
+chatapi-targets = { path = "../targets" }
+chatapi-tools = { path = "../tools" }
+chatapi-mcp = { path = "../mcp" }
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true
@@ -24,3 +29,7 @@ bytes.workspace = true
 futures-util.workspace = true
 hyper.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+async-trait = "0.1"

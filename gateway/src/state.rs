@@ -1,38 +1,39 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use chatapi_ringbuf::CommandSender;
-pub struct Session {
-    pub id: String,
-    pub model: String,
-    pub created: i64,
-    pub status: SessionStatus,
-}
+use chatapi_mcp::McpClient;
+use chatapi_rules::ChatApiConfig;
+use chatapi_sessions::SessionManager;
+use chatapi_shared::traits::TargetProvider;
+use chatapi_tools::ToolRegistry;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum SessionStatus {
-    Idle,
-    Processing,
-    Streaming,
-}
-
-/// Application state shared across handlers.
+/// Application state shared across all handlers.
 #[derive(Clone)]
 pub struct AppState {
-    /// Active sessions keyed by session ID.
-    pub sessions: Arc<Mutex<HashMap<String, Session>>>,
-    /// Channel for sending commands to and receiving events from the CDP engine.
-    pub cdp: Arc<Mutex<CommandSender>>,
-    /// Whether the browser/CDP engine is connected.
-    pub browser_connected: Arc<Mutex<bool>>,
+    /// Config loaded from .chatapi/config.toml.
+    pub config: Arc<tokio::sync::RwLock<ChatApiConfig>>,
+    /// Target provider (API or browser).
+    pub target: Arc<dyn TargetProvider>,
+    /// Tool registry with built-in + MCP tools.
+    pub tools: Arc<ToolRegistry>,
+    /// Session manager for conversation history.
+    pub sessions: Arc<SessionManager>,
+    /// Active MCP server connections.
+    pub mcp_clients: Arc<Vec<Arc<McpClient>>>,
 }
 
 impl AppState {
-    pub fn new(cdp: CommandSender) -> Self {
+    pub fn new(
+        config: ChatApiConfig,
+        target: impl TargetProvider + 'static,
+        tools: ToolRegistry,
+        sessions: SessionManager,
+        mcp_clients: Vec<Arc<McpClient>>,
+    ) -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            cdp: Arc::new(Mutex::new(cdp)),
-            browser_connected: Arc::new(Mutex::new(false)),
+            config: Arc::new(tokio::sync::RwLock::new(config)),
+            target: Arc::new(target),
+            tools: Arc::new(tools),
+            sessions: Arc::new(sessions),
+            mcp_clients: Arc::new(mcp_clients),
         }
     }
 }

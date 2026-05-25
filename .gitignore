@@ -1,2 +1,6 @@
 /target/
 Cargo.lock
+.superpowers/
+.chatapi/
+*.log
+*.pid
