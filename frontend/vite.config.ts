@@ -6,6 +6,11 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
+      "/ws": {
+        target: "ws://localhost:8090",
+        ws: true,
+        changeOrigin: true,
+      },
       "/v1": {
         target: "http://localhost:8090",
         changeOrigin: true,

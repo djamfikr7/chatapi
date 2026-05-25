@@ -1,6 +1,8 @@
 import {
   createSignal,
   createEffect,
+  createEffect as createSubscription,
+  onCleanup,
   For,
   Show,
   type Setter,
@@ -8,6 +10,17 @@ import {
 import type { ChatMessage, ToolCall, Session } from "../lib/api";
 import { fetchTools, type ToolInfo } from "../lib/api";
 import { streamChatCompletion } from "../lib/streaming";
+import {
+  connectionState,
+  onToken,
+  onResponseDone,
+  onToolCall,
+  onToolResult,
+  type WSTokenEvent,
+  type WSResponseDoneEvent,
+  type WSToolCallEvent,
+  type WSToolResultEvent,
+} from "../lib/websocket";
 
 interface ChatPanelProps {
   sessionId: string | null;
@@ -27,12 +40,78 @@ export function ChatPanel(props: ChatPanelProps) {
   const [isStreaming, setIsStreaming] = createSignal(false);
   const [pendingToolCalls, setPendingToolCalls] = createSignal<ToolCall[]>([]);
   const [availableTools, setAvailableTools] = createSignal<ToolInfo[]>([]);
+  // Track whether the current stream is coming via WebSocket (so SSE callbacks are ignored)
+  const [wsStreaming, setWsStreaming] = createSignal(false);
   let messagesRef: HTMLDivElement | undefined;
 
   // Fetch available tools
   createEffect(() => {
     fetchTools().then(setAvailableTools).catch(() => {});
   });
+
+  // ── WebSocket event subscriptions ──────────────────────────────────────
+  // These are active for the lifetime of the component. Events are filtered
+  // to only handle ones matching the current active session.
+
+  onCleanup(
+    onToken((evt: WSTokenEvent) => {
+      if (evt.session_id !== props.sessionId) return;
+      // A WS token arrived -- we are in WS streaming mode
+      setWsStreaming(true);
+      setIsStreaming(true);
+      setStreamingText((prev) => prev + evt.content);
+    })
+  );
+
+  onCleanup(
+    onResponseDone((evt: WSResponseDoneEvent) => {
+      if (evt.session_id !== props.sessionId) return;
+      setWsStreaming(false);
+      setIsStreaming(false);
+      const fullText = streamingText() || evt.response;
+      setStreamingText("");
+      if (fullText) {
+        const assistantMsg: ChatMessage = {
+          role: "assistant",
+          content: fullText,
+        };
+        props.onAddMessage(assistantMsg);
+      }
+      props.setIsLoading(false);
+    })
+  );
+
+  onCleanup(
+    onToolCall((evt: WSToolCallEvent) => {
+      if (evt.session_id !== props.sessionId) return;
+      const tc: ToolCall = {
+        id: `ws_call_${Date.now()}`,
+        type: "function",
+        function: {
+          name: evt.tool_name,
+          arguments: evt.arguments,
+        },
+      };
+      setPendingToolCalls((prev) => [...prev, tc]);
+    })
+  );
+
+  onCleanup(
+    onToolResult((evt: WSToolResultEvent) => {
+      if (evt.session_id !== props.sessionId) return;
+      // Show tool result as a tool message in the chat
+      const toolMsg: ChatMessage = {
+        role: "tool",
+        content: evt.result,
+        name: evt.tool_name,
+      };
+      props.onAddMessage(toolMsg);
+      // Remove matching pending tool call
+      setPendingToolCalls((prev) =>
+        prev.filter((tc) => tc.function.name !== evt.tool_name)
+      );
+    })
+  );
 
   // Auto-scroll on new messages
   createEffect(() => {
@@ -53,6 +132,7 @@ export function ChatPanel(props: ChatPanelProps) {
     setInput("");
     setStreamingText("");
     setPendingToolCalls([]);
+    setWsStreaming(false);
 
     const userMsg: ChatMessage = { role: "user", content: text };
     props.onAddMessage(userMsg);
@@ -60,6 +140,7 @@ export function ChatPanel(props: ChatPanelProps) {
     setIsStreaming(true);
 
     const messages = [...props.messages, userMsg];
+    const useWS = connectionState() === "connected";
 
     try {
       await streamChatCompletion(
@@ -69,12 +150,17 @@ export function ChatPanel(props: ChatPanelProps) {
         },
         {
           onToken(token) {
+            // If WS is handling this stream, ignore SSE tokens
+            if (wsStreaming()) return;
             setStreamingText((prev) => prev + token);
           },
           onToolCall(toolCall) {
+            if (wsStreaming()) return;
             setPendingToolCalls((prev) => [...prev, toolCall]);
           },
           onDone(fullText, toolCalls) {
+            // If WS is handling this stream, ignore SSE done
+            if (wsStreaming()) return;
             setIsStreaming(false);
             setStreamingText("");
 
@@ -138,6 +224,7 @@ export function ChatPanel(props: ChatPanelProps) {
     // Re-send with tool result
     setInput("");
     setStreamingText("");
+    setWsStreaming(false);
     props.setIsLoading(true);
     setIsStreaming(true);
 
@@ -148,12 +235,15 @@ export function ChatPanel(props: ChatPanelProps) {
       },
       {
         onToken(token) {
+          if (wsStreaming()) return;
           setStreamingText((prev) => prev + token);
         },
         onToolCall(tc) {
+          if (wsStreaming()) return;
           setPendingToolCalls((prev) => [...prev, tc]);
         },
         onDone(fullText, toolCalls) {
+          if (wsStreaming()) return;
           setIsStreaming(false);
           setStreamingText("");
           if (toolCalls.length > 0) {

@@ -2,6 +2,7 @@ import {
   createSignal,
   createEffect,
   onMount,
+  onCleanup,
   Show,
   For,
 } from "solid-js";
@@ -12,6 +13,12 @@ import { Terminal } from "./components/Terminal";
 import { SessionList } from "./components/SessionList";
 import type { ChatMessage, Session } from "./lib/api";
 import { fetchHealth, fetchSessions, createSession, getSession } from "./lib/api";
+import {
+  initWebSocket,
+  connectionState,
+  onSessionEvent,
+  type WSSessionEvent,
+} from "./lib/websocket";
 
 export interface OpenFile {
   path: string;
@@ -46,7 +53,7 @@ export default function App() {
   const [rightWidth, setRightWidth] = createSignal(380);
   const [terminalHeight, setTerminalHeight] = createSignal(250);
 
-  // Check health on mount
+  // Check health on mount, init WebSocket, subscribe to session events
   onMount(async () => {
     try {
       const h = await fetchHealth();
@@ -62,6 +69,28 @@ export default function App() {
     } catch {
       // sessions endpoint may not be available
     }
+
+    // Initialize WebSocket connection
+    const cleanupWS = initWebSocket();
+
+    // Listen for session events from WebSocket
+    const unsubSession = onSessionEvent((evt: WSSessionEvent) => {
+      if (evt.action === "created") {
+        // Refresh session list to pick up the new session
+        fetchSessions().then(setSessions).catch(() => {});
+      } else if (evt.action === "deleted") {
+        setSessions((prev) => prev.filter((s) => s.id !== evt.session_id));
+        if (activeSessionId() === evt.session_id) {
+          setActiveSessionId(null);
+          setMessages([]);
+        }
+      }
+    });
+
+    onCleanup(() => {
+      unsubSession();
+      cleanupWS();
+    });
   });
 
   // Load session messages when active session changes
@@ -356,7 +385,25 @@ export default function App() {
             {openFiles().find((f) => f.path === activeFilePath())?.language || ""}
           </span>
         </Show>
-        <span>UTF-8</span>
+        <span class="mr-4">UTF-8</span>
+        {/* WebSocket connection status indicator */}
+        <span class="flex items-center gap-1 mr-1">
+          <span
+            class="inline-block w-2 h-2 rounded-full"
+            classList={{
+              "bg-green-400": connectionState() === "connected",
+              "bg-yellow-400 animate-pulse": connectionState() === "connecting",
+              "bg-red-400": connectionState() === "disconnected",
+            }}
+          />
+          <span>
+            {connectionState() === "connected"
+              ? "WS"
+              : connectionState() === "connecting"
+              ? "WS..."
+              : "WS off"}
+          </span>
+        </span>
       </div>
     </div>
   );

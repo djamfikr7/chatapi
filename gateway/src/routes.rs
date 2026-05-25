@@ -18,20 +18,19 @@ use tracing::{info, warn};
 
 use crate::state::AppState;
 use crate::streaming::SseStream;
+use crate::ws::WsEvent;
 
 /// POST /v1/chat/completions
 pub async fn chat_completions(
     State(state): State<AppState>,
     Json(mut request): Json<ChatCompletionRequest>,
 ) -> Result<Response, ChatApiError> {
-    // Validate request
     if request.messages.is_empty() {
         return Err(ChatApiError::InvalidRequest(
             "messages must not be empty".to_string(),
         ));
     }
 
-    // Validate tool messages
     for msg in &request.messages {
         if msg.role == Role::Tool && msg.tool_call_id.is_none() {
             return Err(ChatApiError::InvalidRequest(
@@ -53,13 +52,11 @@ pub async fn chat_completions(
         })
     }).collect::<Vec<_>>();
 
-    // Filter tools by allowed_tools config
     let filtered_tools: Vec<_> = tool_schemas.iter().filter(|t| {
         let name = t["name"].as_str().unwrap_or("");
         filter::is_tool_allowed(name, &config)
     }).cloned().collect();
 
-    // Inject system prompt if not already present
     let system_prompt = prompt::build_system_prompt(&config, &filtered_tools);
     if !system_prompt.is_empty() {
         let has_system = request.messages.first().map(|m| m.role == Role::System).unwrap_or(false);
@@ -100,17 +97,26 @@ async fn handle_streaming(
 ) -> Result<Response, ChatApiError> {
     let (tx, rx) = mpsc::channel::<String>(64);
 
-    // Get streaming response from target
     let target_stream = state.target.stream_request(&request).await
         .map_err(|e| ChatApiError::AutomationFailure(format!("Target error: {}", e)))?;
 
-    // Pipe target stream into mpsc channel
+    // Clone broadcaster and request_id for the streaming task
+    let broadcaster = state.events.clone();
+    let session_id = request_id.clone();
+
+    // Pipe target stream into mpsc channel + broadcast to WS clients
     tokio::spawn(async move {
         let mut stream = target_stream;
         while let Some(result) = stream.next().await {
             match result {
                 Ok(token) => {
                     if !token.is_empty() {
+                        // Broadcast to WebSocket clients
+                        broadcaster.send(WsEvent::Token {
+                            session_id: session_id.clone(),
+                            content: token.clone(),
+                        });
+                        // Send to SSE stream
                         if tx.send(token).await.is_err() {
                             break;
                         }
@@ -122,6 +128,11 @@ async fn handle_streaming(
                 }
             }
         }
+        // Signal response complete
+        broadcaster.send(WsEvent::ResponseDone {
+            session_id: session_id.clone(),
+            response: String::new(),
+        });
     });
 
     let sse_stream = SseStream::new(rx, request_id, request.model);
@@ -145,13 +156,11 @@ async fn handle_non_streaming(
         .map(|m| m.role == Role::Tool)
         .unwrap_or(false);
 
-    // Send to target
     let response = state.target.send_request(&request).await
         .map_err(|e| ChatApiError::AutomationFailure(format!("Target error: {}", e)))?;
 
-    // Check if response contains tool calls (skip if last message was a tool result)
     if has_tools && !last_is_tool_result {
-        // First check native tool_calls from API
+        // Check native tool_calls from API
         if let Some(tool_calls) = response.choices.first().and_then(|c| c.message.tool_calls.as_ref()) {
             if !tool_calls.is_empty() {
                 let all_tool_calls = tool_calls.clone();
@@ -160,8 +169,14 @@ async fn handle_non_streaming(
                 let working_dir = config.working_dir();
                 drop(config);
 
-                let mut tool_results = Vec::new();
                 for tc in tool_calls.iter() {
+                    // Broadcast tool call to WS clients
+                    state.events.send(WsEvent::ToolCall {
+                        session_id: request_id.clone(),
+                        tool_name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                    });
+
                     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
@@ -171,9 +186,9 @@ async fn handle_non_streaming(
                         env: std::collections::HashMap::new(),
                     };
 
-                    match state.tools.execute(&tc.function.name, args, &ctx).await {
+                    let (result_text, is_error) = match state.tools.execute(&tc.function.name, args, &ctx).await {
                         Ok(result) => {
-                            let result_text = match &result {
+                            let text = match &result {
                                 chatapi_shared::traits::ToolResult::Text(t) => t.clone(),
                                 chatapi_shared::traits::ToolResult::Diff { old, new, path } => {
                                     format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new)
@@ -182,27 +197,20 @@ async fn handle_non_streaming(
                                     format!("Error: {}", message)
                                 }
                             };
-                            tool_results.push(ChatMessage {
-                                role: Role::Tool,
-                                content: Some(result_text),
-                                tool_calls: None,
-                                tool_call_id: Some(tc.id.clone()),
-                                name: Some(tc.function.name.clone()),
-                            });
+                            (text, false)
                         }
-                        Err(e) => {
-                            tool_results.push(ChatMessage {
-                                role: Role::Tool,
-                                content: Some(format!("Tool error: {}", e)),
-                                tool_calls: None,
-                                tool_call_id: Some(tc.id.clone()),
-                                name: Some(tc.function.name.clone()),
-                            });
-                        }
-                    }
+                        Err(e) => (format!("Tool error: {}", e), true),
+                    };
+
+                    // Broadcast tool result to WS clients
+                    state.events.send(WsEvent::ToolResult {
+                        session_id: request_id.clone(),
+                        tool_name: tc.function.name.clone(),
+                        result: result_text,
+                        is_error,
+                    });
                 }
 
-                // Return tool_calls response
                 let prompt_tokens = estimate_tokens(&format!("{:?}", &request.messages));
                 let mut resp = ChatCompletionResponse::new_tool_calls(
                     request.model,
@@ -221,6 +229,14 @@ async fn handle_non_streaming(
             if contains_tool_call_pattern(content) {
                 let parsed = parse_tool_calls_from_text(content);
                 if parsed.has_tool_calls {
+                    for tc in &parsed.tool_calls {
+                        state.events.send(WsEvent::ToolCall {
+                            session_id: request_id.clone(),
+                            tool_name: tc.function.name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                        });
+                    }
+
                     let prompt_tokens = estimate_tokens(&format!("{:?}", &request.messages));
                     let completion_tokens = estimate_tokens(content);
                     let mut resp = ChatCompletionResponse::new_tool_calls(
@@ -237,7 +253,14 @@ async fn handle_non_streaming(
         }
     }
 
-    // Regular text response
+    // Regular text response — broadcast to WS
+    if let Some(content) = response.choices.first().and_then(|c| c.message.content.as_ref()) {
+        state.events.send(WsEvent::ResponseDone {
+            session_id: request_id.clone(),
+            response: content.clone(),
+        });
+    }
+
     let mut resp = response;
     resp.id = request_id;
     resp.created = created;
@@ -286,6 +309,13 @@ pub async fn create_session(
 ) -> Json<serde_json::Value> {
     let model = body["model"].as_str().unwrap_or("deepseek-chat");
     let session = state.sessions.create(model);
+
+    // Broadcast session creation
+    state.events.send(WsEvent::SessionEvent {
+        session_id: session.id.clone(),
+        action: "created".to_string(),
+    });
+
     Json(serde_json::json!({
         "id": session.id,
         "model": session.metadata.model,
@@ -316,6 +346,11 @@ pub async fn delete_session(
     Path(session_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ChatApiError> {
     if state.sessions.delete(&session_id) {
+        // Broadcast session deletion
+        state.events.send(WsEvent::SessionEvent {
+            session_id: session_id.clone(),
+            action: "deleted".to_string(),
+        });
         Ok(Json(serde_json::json!({"deleted": true})))
     } else {
         Err(ChatApiError::InvalidRequest(format!("Session not found: {}", session_id)))
@@ -380,7 +415,6 @@ pub async fn update_config(
         }
     }
 
-    // Save to disk if config file exists
     let config_path = std::env::var("CHATAPI_CONFIG")
         .unwrap_or_else(|_| ".chatapi/config.toml".to_string());
     let _ = config.save(std::path::Path::new(&config_path));
