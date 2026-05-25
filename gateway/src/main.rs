@@ -133,9 +133,6 @@ async fn main() -> anyhow::Result<()> {
         // Config
         .route("/config", get(routes::get_config))
         .route("/config", put(routes::update_config))
-        // File browser
-        .route("/files", get(routes::list_files))
-        .route("/files/read", get(routes::read_file))
         // WebSocket
         .route("/ws", get(ws::ws_handler))
         .layer(cors)

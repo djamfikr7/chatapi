@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  gateway:
+    build: .
+    ports:
+      - "8090:8090"
+    environment:
+      - CHATAPI_PORT=8090
+      - CHATAPI_FRONTEND_DIR=/app/frontend/dist
+      - RUST_LOG=gateway=info
+      # API mode (default)
+      - CHATAPI_CONFIG=/app/.chatapi/config.toml
+      # Browser mode (uncomment to use)
+      # - LAUNCH_CHROME=1
+      # - CHROME_DEBUG_PORT=9222
+    volumes:
+      - ./.chatapi:/app/.chatapi
+      - ./sessions:/app/sessions
+    restart: unless-stopped
+
+  # Optional: Chrome for browser mode
+  # chrome:
+  #   image: chromedp/headless-shell:latest
+  #   ports:
+  #     - "9222:9222"
+  #   shm_size: "2gb"
+  #   restart: unless-stopped

@@ -1,5 +1,4 @@
 import { createSignal, createEffect, For, Show, onMount } from "solid-js";
-import { fetchTools, type ToolInfo } from "../lib/api";
 
 interface FileEntry {
   name: string;
@@ -14,28 +13,10 @@ interface FileTreeProps {
 }
 
 const FILE_ICONS: Record<string, string> = {
-  ts: "TS",
-  tsx: "TX",
-  js: "JS",
-  jsx: "JX",
-  rs: "RS",
-  py: "PY",
-  json: "{}",
-  md: "M ",
-  html: "<>",
-  css: "# ",
-  toml: "T ",
-  yaml: "Y ",
-  yml: "Y ",
-  sh: "$ ",
-  go: "GO",
-  c: "C ",
-  cpp: "C+",
-  h: "H ",
-  hpp: "H+",
-  txt: "  ",
-  gitignore: "G ",
-  lock: "L ",
+  ts: "TS", tsx: "TX", js: "JS", jsx: "JX", rs: "RS", py: "PY",
+  json: "{}", md: "M ", html: "<>", css: "# ", toml: "T ",
+  yaml: "Y ", yml: "Y ", sh: "$ ", go: "GO", c: "C ", cpp: "C+",
+  h: "H ", hpp: "H+", txt: "  ", gitignore: "G ", lock: "L ",
 };
 
 function getFileIcon(name: string, isDir: boolean): string {
@@ -48,32 +29,17 @@ function getFileIconColor(name: string, isDir: boolean): string {
   if (isDir) return "text-blue-400";
   const ext = name.split(".").pop()?.toLowerCase() || "";
   switch (ext) {
-    case "ts":
-    case "tsx":
-      return "text-blue-400";
-    case "js":
-    case "jsx":
-      return "text-yellow-400";
-    case "rs":
-      return "text-orange-400";
-    case "py":
-      return "text-green-400";
-    case "json":
-      return "text-yellow-300";
-    case "md":
-      return "text-blue-300";
-    case "html":
-      return "text-red-400";
-    case "css":
-      return "text-purple-400";
-    case "toml":
-    case "yaml":
-    case "yml":
-      return "text-green-300";
-    case "sh":
-      return "text-green-500";
-    default:
-      return "text-ide-muted";
+    case "ts": case "tsx": return "text-blue-400";
+    case "js": case "jsx": return "text-yellow-400";
+    case "rs": return "text-orange-400";
+    case "py": return "text-green-400";
+    case "json": return "text-yellow-300";
+    case "md": return "text-blue-300";
+    case "html": return "text-red-400";
+    case "css": return "text-purple-400";
+    case "toml": case "yaml": case "yml": return "text-green-300";
+    case "sh": return "text-green-500";
+    default: return "text-ide-muted";
   }
 }
 
@@ -83,7 +49,6 @@ export function FileTree(props: FileTreeProps) {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set(["."]));
   const [dirContents, setDirContents] = createSignal<Record<string, FileEntry[]>>({});
 
-  // Load root directory on mount
   onMount(async () => {
     await loadDirectory(".");
   });
@@ -91,35 +56,35 @@ export function FileTree(props: FileTreeProps) {
   async function loadDirectory(dirPath: string) {
     setLoading(true);
     try {
-      // Use the tools endpoint to get file listing
-      // The gateway exposes tools; we simulate a directory listing by using
-      // well-known project files
-      const rootFiles = getProjectFiles();
-      setFiles(rootFiles);
-      setDirContents((prev) => ({ ...prev, [dirPath]: rootFiles }));
+      const res = await fetch(`/files?path=${encodeURIComponent(dirPath)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const entries: FileEntry[] = data.entries || [];
+      setDirContents((prev) => ({ ...prev, [dirPath]: entries }));
+      if (dirPath === ".") setFiles(entries);
       setExpanded((prev) => new Set([...prev, dirPath]));
     } catch (err) {
       console.error("Failed to load directory:", err);
+      if (dirPath === ".") {
+        // Fallback to hardcoded project files
+        setFiles(getFallbackFiles());
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  function getProjectFiles(): FileEntry[] {
-    // Provide a sensible default file tree based on the ChatAPI project structure
+  function getFallbackFiles(): FileEntry[] {
     return [
-      { name: "Cargo.toml", path: "Cargo.toml", isDir: false, extension: "toml" },
-      { name: "Cargo.lock", path: "Cargo.lock", isDir: false, extension: "lock" },
-      { name: "specs.md", path: "specs.md", isDir: false, extension: "md" },
+      { name: "Cargo.toml", path: "Cargo.toml", isDir: false },
+      { name: "specs.md", path: "specs.md", isDir: false },
       { name: "gateway", path: "gateway", isDir: true },
       { name: "shared", path: "shared", isDir: true },
       { name: "rules", path: "rules", isDir: true },
       { name: "sessions", path: "sessions", isDir: true },
       { name: "tools", path: "tools", isDir: true },
       { name: "targets", path: "targets", isDir: true },
-      { name: "tests", path: "tests", isDir: true },
-      { name: "docs", path: "docs", isDir: true },
-      { name: ".knowledge", path: ".knowledge", isDir: true },
+      { name: "frontend", path: "frontend", isDir: true },
     ];
   }
 
@@ -133,6 +98,10 @@ export function FileTree(props: FileTreeProps) {
       }
       return next;
     });
+    // Load directory contents if not already loaded
+    if (!dirContents()[path]) {
+      loadDirectory(path);
+    }
   }
 
   async function handleFileClick(entry: FileEntry) {
@@ -141,35 +110,19 @@ export function FileTree(props: FileTreeProps) {
       return;
     }
 
-    // Try to fetch file content via the tools API
     try {
-      const res = await fetch("/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            {
-              role: "user",
-              content: `Read the file at path: ${entry.path}. Return ONLY the raw file content, no explanations.`,
-            },
-          ],
-          stream: false,
-        }),
-      });
+      const res = await fetch(`/files/read?path=${encodeURIComponent(entry.path)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const content = data.choices?.[0]?.message?.content || `// File: ${entry.path}\n// Content could not be loaded`;
       const language = props.getLanguage(entry.path);
-      props.onOpenFile(entry.path, content, language);
+      props.onOpenFile(entry.path, data.content || "", language);
     } catch {
-      // Fallback: open with placeholder content
       const language = props.getLanguage(entry.path);
-      props.onOpenFile(entry.path, `// File: ${entry.path}\n// Failed to load content`, language);
+      props.onOpenFile(entry.path, `// Failed to load: ${entry.path}`, language);
     }
   }
 
   function renderTree(entries: FileEntry[], depth: number = 0) {
-    // Sort: directories first, then files alphabetically
     const sorted = [...entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
       return a.name.localeCompare(b.name);
