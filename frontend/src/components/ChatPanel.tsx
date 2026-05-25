@@ -1,7 +1,6 @@
 import {
   createSignal,
   createEffect,
-  createEffect as createSubscription,
   onCleanup,
   For,
   Show,
@@ -11,7 +10,6 @@ import type { ChatMessage, ToolCall, Session } from "../lib/api";
 import { fetchTools, type ToolInfo } from "../lib/api";
 import { streamChatCompletion } from "../lib/streaming";
 import {
-  connectionState,
   onToken,
   onResponseDone,
   onToolCall,
@@ -140,7 +138,6 @@ export function ChatPanel(props: ChatPanelProps) {
     setIsStreaming(true);
 
     const messages = [...props.messages, userMsg];
-    const useWS = connectionState() === "connected";
 
     try {
       await streamChatCompletion(

@@ -11,6 +11,7 @@ import { FileTree } from "./components/FileTree";
 import { MonacoEditor } from "./components/MonacoEditor";
 import { Terminal } from "./components/Terminal";
 import { SessionList } from "./components/SessionList";
+import { ConfigPanel } from "./components/ConfigPanel";
 import type { ChatMessage, Session } from "./lib/api";
 import { fetchHealth, fetchSessions, createSession, getSession } from "./lib/api";
 import {
@@ -44,6 +45,9 @@ export default function App() {
 
   // Terminal visibility
   const [terminalVisible, setTerminalVisible] = createSignal(true);
+
+  // Config panel visibility
+  const [configOpen, setConfigOpen] = createSignal(false);
 
   // Left sidebar tab
   const [leftTab, setLeftTab] = createSignal<"files" | "sessions">("files");
@@ -278,10 +282,29 @@ export default function App() {
         </div>
         <div class="flex-1" />
         <Show when={health()}>
-          <span class="text-xs text-ide-muted">
+          <span class="text-xs text-ide-muted mr-2">
             {health()!.mode} | {health()!.status}
           </span>
         </Show>
+        <button
+          class="text-ide-muted hover:text-ide-text transition-colors p-1"
+          onClick={() => setConfigOpen((v) => !v)}
+          title="Settings"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="7" cy="7" r="2.5" />
+            <path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.7 2.7l1.4 1.4M9.9 9.9l1.4 1.4M11.3 2.7l-1.4 1.4M4.1 9.9l-1.4 1.4" />
+          </svg>
+        </button>
       </div>
 
       {/* Main content area */}
@@ -405,6 +428,12 @@ export default function App() {
           </span>
         </span>
       </div>
+
+      {/* Config panel overlay */}
+      <ConfigPanel
+        open={configOpen()}
+        onClose={() => setConfigOpen(false)}
+      />
     </div>
   );
 }
