@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 chatapi-shared = { path = "../shared" }
+chatapi-cdp-engine = { path = "../cdp-engine" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

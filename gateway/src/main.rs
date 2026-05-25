@@ -7,7 +7,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use chatapi_mcp::{McpClient, McpToolProvider};
 use chatapi_rules::ChatApiConfig;
 use chatapi_sessions::{SessionManager, MemoryStore, FileStore};
-use chatapi_targets::TargetRouter;
+use chatapi_targets::{TargetRouter, BrowserTarget};
 use chatapi_tools::ToolRegistry;
 use chatapi_shared::target::TargetConfig;
 use chatapi_shared::target::Target as TargetKind;
@@ -30,25 +30,47 @@ async fn main() -> anyhow::Result<()> {
     let config = ChatApiConfig::load_or_default(Path::new(&config_path));
     tracing::info!(mode = %config.target.mode, model = %config.target.model, "Loaded config");
 
-    // Build target router from config
-    let target_kind = match config.target.mode.as_str() {
-        "api" => TargetKind::Api,
-        _ => TargetKind::Browser,
-    };
-    let api_key = config.target.api.as_ref().and_then(|a| {
-        std::env::var(&a.api_key_env).ok()
-    });
-    let api_endpoint = config.target.api.as_ref()
-        .map(|a| a.endpoint.clone())
-        .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+    // Build target from config
+    let target = if config.target.mode == "api" {
+        // API mode: use direct API endpoint
+        let api_key = config.target.api.as_ref().and_then(|a| {
+            std::env::var(&a.api_key_env).ok()
+        });
+        let api_endpoint = config.target.api.as_ref()
+            .map(|a| a.endpoint.clone())
+            .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+        let target_config = TargetConfig {
+            target: TargetKind::Api,
+            api_endpoint,
+            api_key,
+            model: config.target.model.clone(),
+        };
+        tracing::info!("Target: API mode");
+        TargetRouter::new(&target_config)
+    } else {
+        // Browser mode: try to connect to Chrome via CDP
+        let chrome_port = std::env::var("CHROME_DEBUG_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(9222);
 
-    let target_config = TargetConfig {
-        target: target_kind,
-        api_endpoint,
-        api_key,
-        model: config.target.model.clone(),
+        match BrowserTarget::from_port(chrome_port, config.target.model.clone()).await {
+            Ok(browser) => {
+                tracing::info!(port = chrome_port, "Target: Browser (CDP connected)");
+                TargetRouter::with_browser(browser)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, port = chrome_port, "Chrome not available, falling back to API stub");
+                let target_config = TargetConfig {
+                    target: TargetKind::Browser,
+                    api_endpoint: String::new(),
+                    api_key: None,
+                    model: config.target.model.clone(),
+                };
+                TargetRouter::new(&target_config)
+            }
+        }
     };
-    let target = TargetRouter::new(&target_config);
 
     // Build tool registry with built-in + MCP tools
     let mut tools = build_tool_registry();
