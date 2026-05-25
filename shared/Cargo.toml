@@ -11,3 +11,5 @@ uuid.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 axum.workspace = true
+async-trait = "0.1"
+futures-util.workspace = true

@@ -1,3 +1,7 @@
+pub mod target;
+pub mod tool_parser;
+pub mod traits;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -9,6 +13,62 @@ pub enum Role {
     System,
     User,
     Assistant,
+    Tool,
+}
+
+// ── Tool / Function Calling ─────────────────────────────────────────
+
+/// A tool definition sent by the client (IDE) in the request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: FunctionDefinition,
+}
+
+/// Function schema sent by the IDE.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDefinition {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+}
+
+/// A tool call returned by the LLM in the response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: FunctionCall,
+}
+
+/// The function invocation inside a tool call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Controls whether the LLM can call tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// "auto", "required", or "none"
+    String(String),
+    /// Force a specific function
+    Specific {
+        #[serde(rename = "type")]
+        choice_type: String,
+        function: ToolChoiceFunction,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolChoiceFunction {
+    pub name: String,
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────
@@ -97,6 +157,15 @@ pub struct ChatCompletionRequest {
     pub temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Tool definitions provided by the IDE for function calling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    /// Controls tool use behavior: "auto", "required", "none", or force a function.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+    /// Whether to allow parallel tool calls (default true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 pub type ChatRequest = ChatCompletionRequest;
@@ -108,7 +177,53 @@ fn default_temperature() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
-    pub content: String,
+    /// Content is optional — null when the assistant responds with tool_calls only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Tool calls made by the assistant (OpenAI function calling).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// Required when role == "tool" — ties the result to a specific tool call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Name of the function (used with role == "tool" or role == "function").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ChatMessage {
+    /// Simple text message (system/user/assistant).
+    pub fn new(role: Role, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    /// Assistant message with tool calls (no text content).
+    pub fn with_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    /// Tool result message (from IDE after executing a tool).
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            name: None,
+        }
+    }
 }
 
 // ── Non-streaming response ─────────────────────────────────────────────
@@ -132,11 +247,33 @@ impl ChatCompletionResponse {
             model,
             choices: vec![Choice {
                 index: 0,
-                message: ChatMessage {
-                    role: Role::Assistant,
-                    content,
-                },
+                message: ChatMessage::new(Role::Assistant, content),
                 finish_reason: Some("stop".into()),
+            }],
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
+            },
+        }
+    }
+
+    /// Create a response with tool calls instead of text content.
+    pub fn new_tool_calls(
+        model: String,
+        tool_calls: Vec<ToolCall>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    ) -> Self {
+        Self {
+            id: generate_id(),
+            object: "chat.completion".into(),
+            created: now_epoch(),
+            model,
+            choices: vec![Choice {
+                index: 0,
+                message: ChatMessage::with_tool_calls(tool_calls),
+                finish_reason: Some("tool_calls".into()),
             }],
             usage: Usage {
                 prompt_tokens,
@@ -151,6 +288,7 @@ impl ChatCompletionResponse {
 pub struct Choice {
     pub index: u32,
     pub message: ChatMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
 }
 
@@ -184,6 +322,7 @@ impl ChatCompletionChunk {
                 delta: Delta {
                     role: None,
                     content: Some(content.to_string()),
+                    tool_calls: None,
                 },
                 finish_reason: None,
             }],
@@ -201,6 +340,7 @@ impl ChatCompletionChunk {
                 delta: Delta {
                     role: Some(Role::Assistant),
                     content: None,
+                    tool_calls: None,
                 },
                 finish_reason: None,
             }],
@@ -218,8 +358,63 @@ impl ChatCompletionChunk {
                 delta: Delta {
                     role: None,
                     content: None,
+                    tool_calls: None,
                 },
                 finish_reason: Some("stop".into()),
+            }],
+        }
+    }
+
+    /// Streaming chunk with tool calls (finish_reason = "tool_calls").
+    pub fn new_tool_calls_finish(model: &str, request_id: &str) -> Self {
+        Self {
+            id: request_id.to_string(),
+            object: "chat.completion.chunk".into(),
+            created: now_epoch(),
+            model: model.to_string(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("tool_calls".into()),
+            }],
+        }
+    }
+
+    /// Streaming chunk carrying a partial tool call.
+    pub fn new_tool_call_delta(
+        model: &str,
+        request_id: &str,
+        tool_index: u32,
+        call_id: Option<&str>,
+        call_type: Option<&str>,
+        fn_name: Option<&str>,
+        fn_args: Option<&str>,
+    ) -> Self {
+        Self {
+            id: request_id.to_string(),
+            object: "chat.completion.chunk".into(),
+            created: now_epoch(),
+            model: model.to_string(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: None,
+                    tool_calls: Some(vec![ToolCallDelta {
+                        index: tool_index,
+                        id: call_id.map(|s| s.to_string()),
+                        call_type: call_type.map(|s| s.to_string()),
+                        function: Some(FunctionCallDelta {
+                            name: fn_name.map(|s| s.to_string()),
+                            arguments: fn_args.map(|s| s.to_string()),
+                        }),
+                    }]),
+                },
+                finish_reason: None,
             }],
         }
     }
@@ -239,6 +434,30 @@ pub struct Delta {
     pub role: Option<Role>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Tool calls in streaming — partial tool call chunks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+/// Partial tool call in a streaming chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDelta {
+    pub index: u32,
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub call_type: Option<String>,
+    pub function: Option<FunctionCallDelta>,
+}
+
+/// Partial function call in a streaming chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCallDelta {
+    /// Function name (only sent in the first chunk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Partial arguments string (appended across chunks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 // ── CDP Types ──────────────────────────────────────────────────────────
@@ -329,7 +548,7 @@ mod tests {
         assert_eq!(req.model, "deepseek-chat");
         assert!(req.stream);
         assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.messages[0].content, "hello");
+        assert_eq!(req.messages[0].content.as_deref(), Some("hello"));
     }
 
     #[test]
