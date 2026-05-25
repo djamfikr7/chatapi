@@ -14,6 +14,7 @@ use chatapi_shared::target::Target as TargetKind;
 
 use chatapi_gateway::routes;
 use chatapi_gateway::state::AppState;
+use chatapi_gateway::ws;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -115,6 +116,8 @@ async fn main() -> anyhow::Result<()> {
         // Config
         .route("/config", get(routes::get_config))
         .route("/config", put(routes::update_config))
+        // WebSocket
+        .route("/ws", get(ws::ws_handler))
         .layer(cors)
         .with_state(state);
 

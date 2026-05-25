@@ -4,3 +4,5 @@ Cargo.lock
 .chatapi/
 *.log
 *.pid
+frontend/dist/
+frontend/node_modules/

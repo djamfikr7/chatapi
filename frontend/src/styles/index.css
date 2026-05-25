@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #1e1e1e;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #424242;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #555;
+  }
+}
+
+/* xterm.js overrides */
+.xterm {
+  padding: 8px;
+}
+
+.xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 4px;
+}
+
+/* Chat message styles */
+.chat-message pre {
+  @apply bg-ide-bg rounded p-2 my-1 overflow-x-auto text-sm;
+}
+
+.chat-message code {
+  @apply bg-ide-bg px-1 rounded text-sm;
+}
+
+/* Monaco editor tab bar */
+.tab-bar {
+  @apply flex overflow-x-auto;
+  scrollbar-width: none;
+}
+
+.tab-bar::-webkit-scrollbar {
+  display: none;
+}

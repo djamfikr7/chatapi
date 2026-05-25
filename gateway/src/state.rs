@@ -5,6 +5,8 @@ use chatapi_sessions::SessionManager;
 use chatapi_shared::traits::TargetProvider;
 use chatapi_tools::ToolRegistry;
 
+use crate::ws::EventBroadcaster;
+
 /// Application state shared across all handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -18,6 +20,8 @@ pub struct AppState {
     pub sessions: Arc<SessionManager>,
     /// Active MCP server connections.
     pub mcp_clients: Arc<Vec<Arc<McpClient>>>,
+    /// WebSocket event broadcaster.
+    pub events: EventBroadcaster,
 }
 
 impl AppState {
@@ -34,6 +38,7 @@ impl AppState {
             tools: Arc::new(tools),
             sessions: Arc::new(sessions),
             mcp_clients: Arc::new(mcp_clients),
+            events: EventBroadcaster::new(256),
         }
     }
 }
