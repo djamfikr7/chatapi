@@ -1,0 +1,29 @@
+# ChatAPI Configuration
+# Copy to .chatapi/config.toml and customize
+
+[target]
+mode = "api"          # "api" or "browser"
+model = "deepseek-chat"
+
+[target.api]
+endpoint = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"  # Environment variable name
+
+# Browser mode config (for CDP)
+# [target.mcp]
+# [[target.mcp.servers]]
+# name = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"]
+
+[rules]
+system_prompt = "You are a coding assistant. Use the available tools to help the user."
+# working_dir = "/path/to/workspace"
+
+[rules.context]
+include_files = []
+max_context_tokens = 4000
+
+[sessions]
+store = "memory"      # "memory" or "file"
+# path = ".chatapi/sessions"

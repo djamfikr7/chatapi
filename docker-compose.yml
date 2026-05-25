@@ -7,22 +7,38 @@ services:
       - "8090:8090"
     environment:
       - CHATAPI_PORT=8090
-      - CHATAPI_FRONTEND_DIR=/app/frontend/dist
-      - RUST_LOG=gateway=info
-      # API mode (default)
-      - CHATAPI_CONFIG=/app/.chatapi/config.toml
-      # Browser mode (uncomment to use)
+      - CHATAPI_FRONTEND_DIR=frontend/dist
+      - CHATAPI_CONFIG=.chatapi/config.toml
+      - RUST_LOG=gateway=info,tower_http=info
+      # API mode: set your API key
+      # - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      # Browser mode: uncomment to auto-launch Chrome
       # - LAUNCH_CHROME=1
       # - CHROME_DEBUG_PORT=9222
     volumes:
-      - ./.chatapi:/app/.chatapi
-      - ./sessions:/app/sessions
+      # Mount workspace for file tools
+      - .:/app/workspace
+      # Persist sessions
+      - chatapi-sessions:/app/.chatapi/sessions
+      # Persist config
+      - ./config.example.toml:/app/.chatapi/config.toml
+    working_dir: /app/workspace
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-  # Optional: Chrome for browser mode
+  # Optional: Chrome sidecar for browser mode
+  # Uncomment to use browser-based LLM (DeepSeek, ChatGPT free tier)
   # chrome:
   #   image: chromedp/headless-shell:latest
   #   ports:
   #     - "9222:9222"
   #   shm_size: "2gb"
-  #   restart: unless-stopped
+  #   environment:
+  #     - CHROME_FLAGS=--remote-debugging-port=9222 --no-sandbox --disable-gpu
+
+volumes:
+  chatapi-sessions:

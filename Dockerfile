@@ -1,38 +1,55 @@
-# Multi-stage build: Rust gateway + SolidJS frontend
-FROM rust:1.82 AS builder
+# Multi-stage build: frontend + gateway
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Gateway build
+FROM rust:1.82-slim AS gateway-builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
+COPY Cargo.toml Cargo.lock* ./
+COPY shared/ shared/
+COPY ringbuf/ ringbuf/
+COPY rules/ rules/
+COPY tools/ tools/
+COPY targets/ targets/
+COPY sessions/ sessions/
+COPY mcp/ mcp/
+COPY cdp-engine/ cdp-engine/
+COPY gateway/ gateway/
 
-# Build frontend
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
-RUN cd frontend && npm install && npm run build
-
-# Build gateway
 RUN cargo build --release --bin gateway
 
-# Runtime image
+# Runtime
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy gateway binary
-COPY --from=builder /app/target/release/gateway /usr/local/bin/gateway
+COPY --from=gateway-builder /app/target/release/gateway ./
 
 # Copy frontend build
-COPY --from=builder /app/frontend/dist /app/frontend/dist
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Copy default config
-COPY --from=builder /app/.chatapi /app/.chatapi
-
-ENV CHATAPI_PORT=8090
-ENV CHATAPI_FRONTEND_DIR=/app/frontend/dist
-ENV RUST_LOG=gateway=info
+# Default config
+RUN mkdir -p .chatapi
+COPY config.example.toml .chatapi/config.toml
 
 EXPOSE 8090
 
-CMD ["gateway"]
+ENV CHATAPI_PORT=8090
+ENV CHATAPI_FRONTEND_DIR=frontend/dist
+ENV RUST_LOG=gateway=info,tower_http=info
+
+CMD ["./gateway"]
