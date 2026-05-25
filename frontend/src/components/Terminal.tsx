@@ -1,123 +1,102 @@
 import { onMount, onCleanup } from "solid-js";
-import { Terminal as XTerminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 
-export function Terminal() {
-  let containerRef: HTMLDivElement | undefined;
-  let terminal: XTerminal | undefined;
-  let fitAddon: FitAddon | undefined;
-  let resizeObserver: ResizeObserver | undefined;
-  let ws: WebSocket | undefined;
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+interface TerminalProps {
+  workingDirectory?: string;
+}
 
-  function connectTerminal() {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/terminal`;
+export function Terminal(props: TerminalProps) {
+  let terminalRef: HTMLDivElement | undefined;
+  let ws: WebSocket | null = null;
 
+  onMount(async () => {
+    if (!terminalRef) return;
+
+    const { Terminal: XTerm } = await import("@xterm/xterm");
+    const { FitAddon } = await import("@xterm/addon-fit");
+    await import("@xterm/xterm/css/xterm.css");
+
+    const term = new XTerm({
+      theme: {
+        background: "#1e1e2e",
+        foreground: "#cdd6f4",
+        cursor: "#f5e0dc",
+        selectionBackground: "#45475a",
+        black: "#45475a",
+        red: "#f38ba8",
+        green: "#a6e3a1",
+        yellow: "#f9e2af",
+        blue: "#89b4fa",
+        magenta: "#f5c2e7",
+        cyan: "#94e2d5",
+        white: "#bac2de",
+      },
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      fontSize: 13,
+      cursorBlink: true,
+      scrollback: 10000,
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(terminalRef);
+    fitAddon.fit();
+
+    // Connect to WebSocket terminal
+    const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/terminal`;
     ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
-      terminal?.writeln("\x1b[1;32mConnected to shell.\x1b[0m");
+      term.write("\x1b[32mConnected to terminal\x1b[0m\r\n");
     };
 
     ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        const decoder = new TextDecoder();
-        terminal?.write(decoder.decode(event.data));
+        term.write(new Uint8Array(event.data));
       } else {
-        terminal?.write(event.data);
+        term.write(event.data);
       }
     };
 
     ws.onclose = () => {
-      terminal?.writeln("\r\n\x1b[1;31mDisconnected. Reconnecting...\x1b[0m");
-      reconnectTimer = setTimeout(connectTerminal, 2000);
+      term.write("\r\n\x1b[31mTerminal disconnected\x1b[0m\r\n");
     };
 
     ws.onerror = () => {
-      ws?.close();
+      term.write("\r\n\x1b[31mTerminal connection error\x1b[0m\r\n");
     };
-  }
 
-  onMount(() => {
-    if (!containerRef) return;
-
-    terminal = new XTerminal({
-      theme: {
-        background: "#1e1e1e",
-        foreground: "#cccccc",
-        cursor: "#aeafad",
-        cursorAccent: "#1e1e1e",
-        selectionBackground: "#264f78",
-        black: "#1e1e1e",
-        red: "#f44747",
-        green: "#6A9955",
-        yellow: "#D7BA7D",
-        blue: "#569CD6",
-        magenta: "#C586C0",
-        cyan: "#4EC9B0",
-        white: "#cccccc",
-        brightBlack: "#808080",
-        brightRed: "#f44747",
-        brightGreen: "#6A9955",
-        brightYellow: "#D7BA7D",
-        brightBlue: "#569CD6",
-        brightMagenta: "#C586C0",
-        brightCyan: "#4EC9B0",
-        brightWhite: "#ffffff",
-      },
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
-      fontSize: 13,
-      cursorBlink: true,
-      cursorStyle: "bar",
-      scrollback: 5000,
-    });
-
-    fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(containerRef);
-
-    // Initial fit
-    setTimeout(() => fitAddon?.fit(), 100);
-
-    // Resize observer for dynamic fitting
-    resizeObserver = new ResizeObserver(() => {
-      fitAddon?.fit();
-    });
-    resizeObserver.observe(containerRef);
-
-    // Welcome message
-    terminal.writeln("\x1b[1;36mChatAPI Terminal\x1b[0m");
-    terminal.writeln("\x1b[90mConnecting to shell...\x1b[0m");
-
-    // Connect to WebSocket terminal
-    connectTerminal();
-
-    // Forward terminal input to WebSocket
-    terminal.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
+    // Send keystrokes to the server
+    term.onData((data) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
-    // Forward terminal resize to WebSocket
-    terminal.onResize(({ cols, rows }) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+    // Handle resize
+    const resizeObserver = new ResizeObserver(() => {
+      fitAddon.fit();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "resize",
+          cols: term.cols,
+          rows: term.rows,
+        }));
       }
+    });
+    resizeObserver.observe(terminalRef);
+
+    onCleanup(() => {
+      resizeObserver.disconnect();
+      ws?.close();
+      term.dispose();
     });
   });
 
-  onCleanup(() => {
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    resizeObserver?.disconnect();
-    ws?.close();
-    terminal?.dispose();
-  });
-
   return (
-    <div ref={containerRef} class="h-full w-full bg-[#1e1e1e]" />
+    <div
+      ref={terminalRef}
+      class="h-full w-full bg-ide-bg p-1"
+    />
   );
 }
