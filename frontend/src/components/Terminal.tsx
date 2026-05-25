@@ -59,7 +59,7 @@ export function Terminal() {
     // Welcome message
     terminal.writeln("\x1b[1;36mChatAPI Terminal\x1b[0m");
     terminal.writeln("\x1b[90mConnected to gateway on localhost:8090\x1b[0m");
-    terminal.writeln("\x1b[90mType commands to execute via the gateway's run_command tool.\x1b[0m");
+    terminal.writeln("\x1b[90mType commands to execute via the gateway.\x1b[0m");
     terminal.writeln("");
 
     // Command buffer
@@ -137,28 +137,28 @@ export function Terminal() {
       try {
         terminal!.writeln("\x1b[90mExecuting...\x1b[0m");
 
-        const res = await fetch("/v1/chat/completions", {
+        const res = await fetch("/tools/execute", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [
-              {
-                role: "user",
-                content: `Execute this shell command and return ONLY the output, no explanations. If there is no output, return "(no output)". Command: ${command}`,
-              },
-            ],
-            stream: false,
+            name: "run_command",
+            args: { command },
           }),
         });
 
         const data = await res.json();
-        const output = data.choices?.[0]?.message?.content || "(no response)";
 
-        // Write output with dimmed color
-        const lines = output.split("\n");
-        for (const line of lines) {
-          terminal!.writeln(`\x1b[37m${line}\x1b[0m`);
+        if (data.error) {
+          terminal!.writeln(`\x1b[1;31m${data.error}\x1b[0m`);
+        } else if (data.result) {
+          const lines = data.result.split("\n");
+          for (const line of lines) {
+            terminal!.writeln(`\x1b[37m${line}\x1b[0m`);
+          }
+        }
+
+        if (data.is_error) {
+          terminal!.writeln(`\x1b[1;31mCommand exited with error\x1b[0m`);
         }
       } catch (err) {
         terminal!.writeln(`\x1b[1;31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m`);

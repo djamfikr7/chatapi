@@ -128,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/{session_id}/branch", post(routes::branch_session))
         // Tools
         .route("/tools", get(routes::list_tools))
+        .route("/tools/execute", post(routes::execute_tool))
         // Files
         .route("/files", get(routes::list_files))
         // Config
@@ -135,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/config", put(routes::update_config))
         // WebSocket
         .route("/ws", get(ws::ws_handler))
+        .route("/ws/terminal", get(ws::terminal_handler))
         .layer(cors)
         .with_state(state)
         // Serve frontend static files (must be last — catches all non-API routes)
@@ -156,8 +158,40 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Check if Chrome is already running on the given debug port.
+async fn chrome_running_on_port(port: u16) -> bool {
+    match tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+        Ok(_) => {
+            tracing::info!(port = port, "Chrome already running on debug port");
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Find a free port starting from the given port.
+async fn find_free_port(start: u16) -> u16 {
+    for port in start..start + 100 {
+        if tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await.is_ok() {
+            return port;
+        }
+    }
+    start
+}
+
 /// Launch Chrome with remote debugging enabled.
 async fn launch_chrome(port: u16) -> anyhow::Result<()> {
+    // Check if Chrome is already running
+    if chrome_running_on_port(port).await {
+        return Ok(());
+    }
+
+    // Find a free port if the requested one is taken
+    let actual_port = find_free_port(port).await;
+    if actual_port != port {
+        tracing::warn!(requested = port, actual = actual_port, "Port {} in use, using {}", port, actual_port);
+    }
+
     use tokio::process::Command;
 
     let chrome_bin = if cfg!(target_os = "linux") {
@@ -168,10 +202,10 @@ async fn launch_chrome(port: u16) -> anyhow::Result<()> {
         "chrome.exe"
     };
 
-    tracing::info!(port = port, binary = chrome_bin, "Launching Chrome with remote debugging");
+    tracing::info!(port = actual_port, binary = chrome_bin, "Launching Chrome with remote debugging");
 
     Command::new(chrome_bin)
-        .arg(format!("--remote-debugging-port={}", port))
+        .arg(format!("--remote-debugging-port={}", actual_port))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
         .arg("--disable-background-networking")
@@ -181,9 +215,16 @@ async fn launch_chrome(port: u16) -> anyhow::Result<()> {
         .arg("--safebrowsing-disable-auto-update")
         .spawn()?;
 
-    // Wait a moment for Chrome to start
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    Ok(())
+    // Wait for Chrome to start
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if chrome_running_on_port(actual_port).await {
+            tracing::info!(port = actual_port, "Chrome started successfully");
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Chrome failed to start within 5 seconds")
 }
 
 fn build_tool_registry() -> ToolRegistry {

@@ -551,6 +551,48 @@ pub async fn read_file(
     })))
 }
 
+/// POST /tools/execute — execute a tool directly.
+/// Body: {"name": "run_command", "args": {"command": "ls -la"}}
+pub async fn execute_tool(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let name = body.get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ChatApiError::InvalidRequest("name required".to_string()))?;
+    let args = body.get("args").cloned()
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    let config = state.config.read().await;
+    let working_dir = config.working_dir();
+    drop(config);
+
+    let ctx = chatapi_shared::traits::ToolContext {
+        session_id: String::new(),
+        working_dir,
+        env: std::collections::HashMap::new(),
+    };
+
+    match state.tools.execute(name, args, &ctx).await {
+        Ok(result) => {
+            let (text, is_error) = match &result {
+                chatapi_shared::traits::ToolResult::Text(t) => (t.clone(), false),
+                chatapi_shared::traits::ToolResult::Diff { old, new, path } => {
+                    (format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new), false)
+                }
+                chatapi_shared::traits::ToolResult::Error { message, .. } => {
+                    (format!("Error: {}", message), true)
+                }
+            };
+            Ok(Json(serde_json::json!({
+                "result": text,
+                "is_error": is_error,
+            })))
+        }
+        Err(e) => Err(ChatApiError::AutomationFailure(format!("Tool error: {}", e))),
+    }
+}
+
 fn estimate_tokens(text: &str) -> u32 {
     (text.len() as u32 + 3) / 4
 }
