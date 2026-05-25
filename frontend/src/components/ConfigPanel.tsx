@@ -31,6 +31,14 @@ export function ConfigPanel(props: ConfigPanelProps) {
   const [newTool, setNewTool] = createSignal("");
   const [newPath, setNewPath] = createSignal("");
 
+  // MCP server state
+  const [mcpServers, setMcpServers] = createSignal<McpServer[]>([]);
+  const [newMcpName, setNewMcpName] = createSignal("");
+  const [newMcpCommand, setNewMcpCommand] = createSignal("");
+  const [newMcpArgs, setNewMcpArgs] = createSignal("");
+  const [newMcpEnv, setNewMcpEnv] = createSignal("");
+  const [showAddMcp, setShowAddMcp] = createSignal(false);
+
   // Load config when panel opens
   createEffect(() => {
     if (props.open) {
@@ -51,6 +59,7 @@ export function ConfigPanel(props: ConfigPanelProps) {
       setAllowedTools([...data.rules.allowed_tools]);
       setBlockedPaths([...data.rules.blocked_paths]);
       setSessionStore(data.sessions.store);
+      setMcpServers(data.target.mcp?.servers ? [...data.target.mcp.servers] : []);
     } catch (err) {
       setError("Failed to load config");
       console.error("Config load error:", err);
@@ -68,6 +77,9 @@ export function ConfigPanel(props: ConfigPanelProps) {
         target: {
           mode: targetMode(),
           model: targetModel(),
+          mcp: {
+            servers: mcpServers(),
+          },
         },
         rules: {
           system_prompt: systemPrompt(),
@@ -125,6 +137,54 @@ export function ConfigPanel(props: ConfigPanelProps) {
     if (e.key === "Enter") {
       e.preventDefault();
       addPath();
+    }
+  }
+
+  function parseEnvString(envStr: string): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const pair of envStr.split(",")) {
+      const trimmed = pair.trim();
+      if (!trimmed) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx === -1) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      const val = trimmed.slice(eqIdx + 1).trim();
+      if (key) env[key] = val;
+    }
+    return env;
+  }
+
+  function addMcpServer() {
+    const name = newMcpName().trim();
+    const command = newMcpCommand().trim();
+    if (!name || !command) return;
+    if (mcpServers().some((s) => s.name === name)) return;
+
+    const args = newMcpArgs()
+      .split(",")
+      .map((a) => a.trim())
+      .filter(Boolean);
+    const env = parseEnvString(newMcpEnv());
+
+    const server: McpServer = { name, command, args };
+    if (Object.keys(env).length > 0) server.env = env;
+
+    setMcpServers((prev) => [...prev, server]);
+    setNewMcpName("");
+    setNewMcpCommand("");
+    setNewMcpArgs("");
+    setNewMcpEnv("");
+    setShowAddMcp(false);
+  }
+
+  function removeMcpServer(name: string) {
+    setMcpServers((prev) => prev.filter((s) => s.name !== name));
+  }
+
+  function handleMcpKeyDown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addMcpServer();
     }
   }
 
@@ -350,6 +410,118 @@ export function ConfigPanel(props: ConfigPanelProps) {
                   <option value="file">file</option>
                 </select>
               </label>
+            </section>
+
+            {/* ── MCP Servers Section ── */}
+            <section class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="text-xs font-semibold text-ide-muted uppercase tracking-wider">
+                  MCP Servers
+                </h3>
+                <button
+                  class="text-xs text-ide-accent hover:text-blue-400 transition-colors"
+                  onClick={() => setShowAddMcp(!showAddMcp())}
+                >
+                  {showAddMcp() ? "Cancel" : "+ Add Server"}
+                </button>
+              </div>
+
+              {/* Add Server Form */}
+              <Show when={showAddMcp()}>
+                <div class="bg-ide-bg border border-ide-border rounded p-3 space-y-2">
+                  <input
+                    type="text"
+                    class="w-full bg-ide-panel border border-ide-border rounded px-2 py-1.5 text-xs text-ide-text focus:outline-none focus:border-ide-accent placeholder-ide-muted"
+                    value={newMcpName()}
+                    onInput={(e) => setNewMcpName(e.currentTarget.value)}
+                    onKeyDown={handleMcpKeyDown}
+                    placeholder="Server name (e.g. filesystem)"
+                  />
+                  <input
+                    type="text"
+                    class="w-full bg-ide-panel border border-ide-border rounded px-2 py-1.5 text-xs text-ide-text focus:outline-none focus:border-ide-accent placeholder-ide-muted"
+                    value={newMcpCommand()}
+                    onInput={(e) => setNewMcpCommand(e.currentTarget.value)}
+                    onKeyDown={handleMcpKeyDown}
+                    placeholder="Command (e.g. npx)"
+                  />
+                  <input
+                    type="text"
+                    class="w-full bg-ide-panel border border-ide-border rounded px-2 py-1.5 text-xs text-ide-text focus:outline-none focus:border-ide-accent placeholder-ide-muted"
+                    value={newMcpArgs()}
+                    onInput={(e) => setNewMcpArgs(e.currentTarget.value)}
+                    onKeyDown={handleMcpKeyDown}
+                    placeholder="Args (comma-separated, e.g. -y,@modelcontextprotocol/server-filesystem)"
+                  />
+                  <input
+                    type="text"
+                    class="w-full bg-ide-panel border border-ide-border rounded px-2 py-1.5 text-xs text-ide-text focus:outline-none focus:border-ide-accent placeholder-ide-muted"
+                    value={newMcpEnv()}
+                    onInput={(e) => setNewMcpEnv(e.currentTarget.value)}
+                    onKeyDown={handleMcpKeyDown}
+                    placeholder="Env (key=val pairs, e.g. API_KEY=abc,DEBUG=true)"
+                  />
+                  <button
+                    class="w-full px-3 py-1.5 text-xs bg-ide-accent text-white rounded hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={addMcpServer}
+                    disabled={!newMcpName().trim() || !newMcpCommand().trim()}
+                  >
+                    Add Server
+                  </button>
+                </div>
+              </Show>
+
+              {/* Server List */}
+              <Show
+                when={mcpServers().length > 0}
+                fallback={
+                  <span class="text-xs text-ide-muted italic">
+                    No MCP servers configured
+                  </span>
+                }
+              >
+                <div class="space-y-1.5">
+                  <For each={mcpServers()}>
+                    {(server) => (
+                      <div class="bg-ide-bg border border-ide-border rounded px-3 py-2 flex items-start justify-between gap-2">
+                        <div class="min-w-0 flex-1">
+                          <div class="flex items-center gap-2">
+                            <span class="text-xs font-medium text-ide-text truncate">
+                              {server.name}
+                            </span>
+                          </div>
+                          <div class="text-[10px] text-ide-muted font-mono truncate mt-0.5">
+                            {server.command}
+                            {server.args.length > 0 ? " " + server.args.join(" ") : ""}
+                          </div>
+                          <Show when={server.env && Object.keys(server.env).length > 0}>
+                            <div class="text-[10px] text-ide-muted mt-0.5">
+                              env: {Object.entries(server.env!).map(([k, v]) => `${k}=${v}`).join(", ")}
+                            </div>
+                          </Show>
+                        </div>
+                        <button
+                          class="text-ide-muted hover:text-red-400 transition-colors shrink-0 p-0.5"
+                          onClick={() => removeMcpServer(server.name)}
+                          title="Remove server"
+                        >
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                          >
+                            <path d="M1 1l12 12M13 1L1 13" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
             </section>
           </Show>
         </div>
