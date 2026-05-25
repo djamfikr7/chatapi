@@ -167,25 +167,22 @@ export async function sendChatCompletion(
   return res.json();
 }
 
-// Execute a tool locally (via the gateway's run_command tool through chat)
+/**
+ * Execute a tool directly via the gateway's POST /tools/execute endpoint.
+ * Returns the tool result as a JSON object with { result: string, is_error: boolean }.
+ */
 export async function executeTool(
   toolName: string,
   args: Record<string, unknown>
-): Promise<string> {
-  const res = await fetch(`${API_BASE}/v1/chat/completions`, {
+): Promise<{ result: string; is_error: boolean }> {
+  const res = await fetch(`${API_BASE}/tools/execute`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "deepseek-chat",
-      messages: [
-        {
-          role: "user",
-          content: `Execute tool: ${toolName} with args: ${JSON.stringify(args)}`,
-        },
-      ],
-      stream: false,
-    }),
+    body: JSON.stringify({ name: toolName, args }),
   });
-  const data: ChatCompletionResponse = await res.json();
-  return data.choices?.[0]?.message?.content || "No response";
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Tool execution failed (${res.status}): ${errorText}`);
+  }
+  return res.json();
 }
