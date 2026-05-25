@@ -19,6 +19,7 @@ pub struct SessionMetadata {
     pub tools_used: Vec<String>,
     pub total_tokens: u64,
     pub total_tool_calls: u64,
+    pub tool_history: Vec<ToolExecution>,
 }
 
 impl SessionMetadata {
@@ -28,8 +29,20 @@ impl SessionMetadata {
             tools_used: Vec::new(),
             total_tokens: 0,
             total_tool_calls: 0,
+            tool_history: Vec::new(),
         }
     }
+}
+
+/// Record of a single tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolExecution {
+    pub tool_name: String,
+    pub arguments: String,
+    pub result: String,
+    pub is_error: bool,
+    pub executed_at: DateTime<Utc>,
+    pub duration_ms: u64,
 }
 
 /// Lightweight summary for listing sessions.
