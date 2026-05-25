@@ -8,6 +8,38 @@ export function Terminal() {
   let terminal: XTerminal | undefined;
   let fitAddon: FitAddon | undefined;
   let resizeObserver: ResizeObserver | undefined;
+  let ws: WebSocket | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function connectTerminal() {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws/terminal`;
+
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => {
+      terminal?.writeln("\x1b[1;32mConnected to shell.\x1b[0m");
+    };
+
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        const decoder = new TextDecoder();
+        terminal?.write(decoder.decode(event.data));
+      } else {
+        terminal?.write(event.data);
+      }
+    };
+
+    ws.onclose = () => {
+      terminal?.writeln("\r\n\x1b[1;31mDisconnected. Reconnecting...\x1b[0m");
+      reconnectTimer = setTimeout(connectTerminal, 2000);
+    };
+
+    ws.onerror = () => {
+      ws?.close();
+    };
+  }
 
   onMount(() => {
     if (!containerRef) return;
@@ -58,118 +90,30 @@ export function Terminal() {
 
     // Welcome message
     terminal.writeln("\x1b[1;36mChatAPI Terminal\x1b[0m");
-    terminal.writeln("\x1b[90mConnected to gateway on localhost:8090\x1b[0m");
-    terminal.writeln("\x1b[90mType commands to execute via the gateway.\x1b[0m");
-    terminal.writeln("");
+    terminal.writeln("\x1b[90mConnecting to shell...\x1b[0m");
 
-    // Command buffer
-    let commandBuffer = "";
-    let historyIndex = -1;
-    const commandHistory: string[] = [];
+    // Connect to WebSocket terminal
+    connectTerminal();
 
-    function writePrompt() {
-      terminal!.write("\x1b[1;32m$\x1b[0m ");
-    }
-
-    writePrompt();
-
+    // Forward terminal input to WebSocket
     terminal.onData((data) => {
-      const code = data.charCodeAt(0);
-
-      if (data === "\r") {
-        // Enter
-        terminal!.writeln("");
-        if (commandBuffer.trim()) {
-          commandHistory.push(commandBuffer);
-          historyIndex = commandHistory.length;
-          executeCommand(commandBuffer.trim());
-        } else {
-          writePrompt();
-        }
-        commandBuffer = "";
-      } else if (code === 127 || data === "\b") {
-        // Backspace
-        if (commandBuffer.length > 0) {
-          commandBuffer = commandBuffer.slice(0, -1);
-          terminal!.write("\b \b");
-        }
-      } else if (data === "\x1b[A") {
-        // Up arrow - history
-        if (historyIndex > 0) {
-          clearCurrentLine();
-          historyIndex--;
-          commandBuffer = commandHistory[historyIndex];
-          terminal!.write(commandBuffer);
-        }
-      } else if (data === "\x1b[B") {
-        // Down arrow - history
-        clearCurrentLine();
-        if (historyIndex < commandHistory.length - 1) {
-          historyIndex++;
-          commandBuffer = commandHistory[historyIndex];
-          terminal!.write(commandBuffer);
-        } else {
-          historyIndex = commandHistory.length;
-          commandBuffer = "";
-        }
-      } else if (code === 3) {
-        // Ctrl+C
-        terminal!.writeln("^C");
-        commandBuffer = "";
-        writePrompt();
-      } else if (code === 12) {
-        // Ctrl+L - clear
-        terminal!.clear();
-        writePrompt();
-      } else if (code >= 32) {
-        // Printable character
-        commandBuffer += data;
-        terminal!.write(data);
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(data);
       }
     });
 
-    function clearCurrentLine() {
-      terminal!.write("\r\x1b[K");
-      writePrompt();
-    }
-
-    async function executeCommand(command: string) {
-      try {
-        terminal!.writeln("\x1b[90mExecuting...\x1b[0m");
-
-        const res = await fetch("/tools/execute", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: "run_command",
-            args: { command },
-          }),
-        });
-
-        const data = await res.json();
-
-        if (data.error) {
-          terminal!.writeln(`\x1b[1;31m${data.error}\x1b[0m`);
-        } else if (data.result) {
-          const lines = data.result.split("\n");
-          for (const line of lines) {
-            terminal!.writeln(`\x1b[37m${line}\x1b[0m`);
-          }
-        }
-
-        if (data.is_error) {
-          terminal!.writeln(`\x1b[1;31mCommand exited with error\x1b[0m`);
-        }
-      } catch (err) {
-        terminal!.writeln(`\x1b[1;31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m`);
+    // Forward terminal resize to WebSocket
+    terminal.onResize(({ cols, rows }) => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
       }
-
-      writePrompt();
-    }
+    });
   });
 
   onCleanup(() => {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     resizeObserver?.disconnect();
+    ws?.close();
     terminal?.dispose();
   });
 
