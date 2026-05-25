@@ -11,7 +11,7 @@
 ### Phase 1-2: Core + Integration ✓
 - 9 workspace crates, 82 tests
 - 10 built-in tools + MCP tool discovery
-- Rules engine, session management, gateway with 15 endpoints
+- Rules engine, session management, gateway with 17 endpoints
 
 ### Phase 3: Frontend + Real-time ✓
 - SolidJS IDE: Monaco editor, terminal, chat panel, file tree
@@ -27,6 +27,12 @@
 - Config UI panel with MCP server management
 - Session branching (POST /sessions/:id/branch)
 - WebSocket terminal (/ws/terminal) — real shell in IDE
+
+### Phase 5: Multi-Model + Polish ✓
+- Multi-model support with provider configuration
+- GET /v1/providers — list all configured providers
+- Model selector in frontend chat panel
+- Tool execution result display (diff view, command output)
 
 ## HOW TO RUN
 
@@ -48,12 +54,13 @@ docker compose up --build
 LAUNCH_CHROME=1 cargo run --bin gateway
 ```
 
-## API ENDPOINTS
+## API ENDPOINTS (17)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /v1/chat/completions | OpenAI-compatible chat |
-| GET | /v1/models | List models |
+| GET | /v1/models | List all models |
+| GET | /v1/providers | List providers |
 | GET | /health | Health check |
 | GET | /sessions | List sessions |
 | POST | /sessions | Create session |
@@ -69,9 +76,28 @@ LAUNCH_CHROME=1 cargo run --bin gateway
 | GET | /ws | WebSocket events |
 | GET | /ws/terminal | WebSocket terminal |
 
-## NEXT
+## CONFIG EXAMPLE
 
-1. **Tool execution UI** — show tool results in Monaco diff view
-2. **Multi-model support** — switch between DeepSeek, ChatGPT, etc.
-3. **E2E integration test** — full flow: frontend → gateway → target
-4. **Performance optimization** — connection pooling, caching
+```toml
+[target]
+mode = "api"
+model = "deepseek-chat"
+
+[target.api]
+endpoint = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[models.providers]]
+name = "openai"
+endpoint = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[[models.providers.models]]
+id = "gpt-4"
+name = "GPT-4"
+max_tokens = 8192
+
+[[models.providers.models]]
+id = "gpt-3.5-turbo"
+name = "GPT-3.5 Turbo"
+```
