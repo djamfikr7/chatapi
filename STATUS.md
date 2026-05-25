@@ -34,6 +34,12 @@
 - WS preferred over SSE when connected
 - Connection status indicator
 
+### Phase 5: Advanced Features ✓
+- Session branching (POST /sessions/:id/branch)
+- Tool approval flow (POST /tools/approve)
+- File tree API (GET /files, GET /files/read)
+- Config UI panel
+
 ## HOW TO RUN
 
 ```bash
@@ -56,29 +62,29 @@ google-chrome --remote-debugging-port=9222
 cargo run --bin gateway  # mode=browser in config
 ```
 
+## API ENDPOINTS
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| /v1/chat/completions | POST | OpenAI-compatible chat (streaming + non-streaming) |
+| /v1/models | GET | List available models |
+| /health | GET | Health check |
+| /sessions | GET | List sessions |
+| /sessions | POST | Create session |
+| /sessions/:id | GET | Get session with messages |
+| /sessions/:id | DELETE | Delete session |
+| /sessions/:id/branch | POST | Fork session at message |
+| /tools | GET | List available tools |
+| /tools/approve | POST | Approve/reject tool calls |
+| /files | GET | List workspace files |
+| /files/read | GET | Read file contents |
+| /config | GET | Get config |
+| /config | PUT | Update config |
+| /ws | GET | WebSocket for real-time events |
+
 ## NEXT
 
-1. **End-to-end integration test** — test full flow: frontend → gateway → target → response
-2. **Chrome launcher polish** — detect if Chrome is already running, pick free port
-3. **MCP server config UI** — add/remove MCP servers from frontend
-4. **Tool execution confirmation** — approve/reject tool calls before execution
-5. **Session branching** — fork conversations at any point
-
-## Architecture
-
-```
-Browser (:8090)          Gateway (:8090)
-┌──────────────┐         ┌──────────────────┐
-│ SolidJS IDE  │───────▶│ Axum routes      │
-│              │◀───────│ (11 endpoints)   │
-│ - Monaco     │   SSE  │                  │
-│ - xterm.js   │   WS   │ - TargetRouter   │
-│ - Chat panel │◀──────▶│   ├─ ApiTarget   │
-│ - File tree  │        │   └─ BrowserTarget│
-│ - Config     │        │ - ToolRegistry   │
-└──────────────┘        │ - SessionManager │
-                        │ - Rules engine   │
-                        │ - MCP clients    │
-                        │ - EventBroadcaster│
-                        └──────────────────┘
-```
+1. **Docker Compose** — containerized deployment
+2. **MCP server config UI** — add/remove MCP servers from frontend
+3. **End-to-end test** — full flow: frontend → gateway → target
+4. **Chrome launcher polish** — detect running Chrome, pick free port
