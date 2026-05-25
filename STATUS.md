@@ -26,40 +26,59 @@
 - WebSocket endpoint for real-time updates
 - CDP engine wired as TargetProvider (browser mode)
 
+### Phase 4: Polish ✓
+- Static file serving (gateway serves frontend build)
+- Chrome auto-launch (LAUNCH_CHROME=1)
+- WebSocket connection manager with auto-reconnect
+- Config UI panel (settings editor)
+- WS preferred over SSE when connected
+- Connection status indicator
+
 ## HOW TO RUN
 
 ```bash
-# Terminal 1: Start gateway
+# Build frontend
+cd frontend && npm run build
+
+# Start gateway (serves frontend + API on port 8090)
 cargo run --bin gateway
 
-# Terminal 2: Start frontend dev server
-cd frontend && npm run dev
+# Open: http://localhost:8090
+```
 
-# Open: http://localhost:3000
+### Browser Mode (CDP)
+```bash
+# Option 1: Auto-launch Chrome
+LAUNCH_CHROME=1 cargo run --bin gateway
+
+# Option 2: Manual Chrome
+google-chrome --remote-debugging-port=9222
+cargo run --bin gateway  # mode=browser in config
 ```
 
 ## NEXT
 
-1. **Wire EventBroadcaster into chat flow** — broadcast tokens/tool events via WS
-2. **SSE-to-WS bridge** — forward streaming tokens to connected WS clients
-3. **Frontend polish** — wire WS connection, handle reconnection
-4. **Chrome launcher** — auto-start Chrome with --remote-debugging-port
-5. **Config UI** — frontend settings panel
+1. **End-to-end integration test** — test full flow: frontend → gateway → target → response
+2. **Chrome launcher polish** — detect if Chrome is already running, pick free port
+3. **MCP server config UI** — add/remove MCP servers from frontend
+4. **Tool execution confirmation** — approve/reject tool calls before execution
+5. **Session branching** — fork conversations at any point
 
 ## Architecture
 
 ```
-Browser (:3000)          Gateway (:8090)
+Browser (:8090)          Gateway (:8090)
 ┌──────────────┐         ┌──────────────────┐
 │ SolidJS IDE  │───────▶│ Axum routes      │
-│              │◀───────│ (10 endpoints)   │
+│              │◀───────│ (11 endpoints)   │
 │ - Monaco     │   SSE  │                  │
 │ - xterm.js   │   WS   │ - TargetRouter   │
 │ - Chat panel │◀──────▶│   ├─ ApiTarget   │
 │ - File tree  │        │   └─ BrowserTarget│
-└──────────────┘        │ - ToolRegistry   │
-                        │ - SessionManager │
+│ - Config     │        │ - ToolRegistry   │
+└──────────────┘        │ - SessionManager │
                         │ - Rules engine   │
                         │ - MCP clients    │
+                        │ - EventBroadcaster│
                         └──────────────────┘
 ```
