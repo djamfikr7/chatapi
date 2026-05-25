@@ -171,7 +171,11 @@ async fn spawn_gateway() -> String {
         .route("/sessions", axum::routing::post(chatapi_gateway::routes::create_session))
         .route("/sessions/{session_id}", axum::routing::get(chatapi_gateway::routes::get_session))
         .route("/sessions/{session_id}", axum::routing::delete(chatapi_gateway::routes::delete_session))
+        .route("/sessions/{session_id}/branch", axum::routing::post(chatapi_gateway::routes::branch_session))
         .route("/tools", axum::routing::get(chatapi_gateway::routes::list_tools))
+        .route("/tools/execute", axum::routing::post(chatapi_gateway::routes::execute_tool))
+        .route("/files", axum::routing::get(chatapi_gateway::routes::list_files))
+        .route("/v1/providers", axum::routing::get(chatapi_gateway::routes::list_providers))
         .route("/config", axum::routing::get(chatapi_gateway::routes::get_config))
         .route("/config", axum::routing::put(chatapi_gateway::routes::update_config))
         .layer(
@@ -588,4 +592,101 @@ async fn e2e_list_models() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["object"], "list");
     assert_eq!(body["data"][0]["id"], "deepseek-chat");
+}
+
+// ── Providers endpoint ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn e2e_list_providers() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new().get(format!("{}/v1/providers", base)).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["providers"].is_array());
+    assert_eq!(body["default_model"], "deepseek-chat");
+}
+
+// ── Tool execution endpoint ─────────────────────────────────────────
+
+#[tokio::test]
+async fn e2e_execute_tool() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/tools/execute", base))
+        .json(&serde_json::json!({"name": "git_status", "args": {}}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["result"].is_string());
+}
+
+#[tokio::test]
+async fn e2e_execute_tool_not_found() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/tools/execute", base))
+        .json(&serde_json::json!({"name": "nonexistent_tool", "args": {}}))
+        .send().await.unwrap();
+    // Gateway returns 400 for unknown tool names
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(status == 400 || status == 500 || body["error"].is_object(),
+        "Expected error response, got status={} body={}", status, body);
+}
+
+// ── File browser endpoints ──────────────────────────────────────────
+
+#[tokio::test]
+async fn e2e_list_files() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/files?path=.", base))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["entries"].is_array());
+    assert_eq!(body["path"], ".");
+}
+
+#[tokio::test]
+async fn e2e_list_files_path_traversal_blocked() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/files?path=../../etc", base))
+        .send().await.unwrap();
+    assert!(resp.status() == 400);
+}
+
+// ── Session branching ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn e2e_session_branch() {
+    let base = spawn_gateway().await;
+    let client = reqwest::Client::new();
+
+    // Create session
+    let resp = client.post(format!("{}/sessions", base))
+        .json(&serde_json::json!({"model": "deepseek-chat"}))
+        .send().await.unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let sid = body["id"].as_str().unwrap();
+
+    // Branch it
+    let resp = client.post(format!("{}/sessions/{}/branch", base, sid))
+        .json(&serde_json::json!({"at_message": 0}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["id"].as_str().unwrap() != sid);
+    assert_eq!(body["message_count"], 0);
+}
+
+#[tokio::test]
+async fn e2e_session_branch_not_found() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/sessions/nonexistent/branch", base))
+        .json(&serde_json::json!({}))
+        .send().await.unwrap();
+    assert!(resp.status() == 400);
 }
