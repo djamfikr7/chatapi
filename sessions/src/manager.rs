@@ -66,4 +66,28 @@ impl SessionManager {
     pub fn delete(&self, id: &str) -> bool {
         self.active.lock().unwrap().remove(id).is_some()
     }
+
+    /// Branch a session — create a new session with messages up to a given index.
+    /// Returns the new session ID.
+    pub fn branch(&self, source_id: &str, at_message: Option<usize>) -> Option<Session> {
+        let mut active = self.active.lock().unwrap();
+        let source = active.get(source_id)?;
+
+        let messages = match at_message {
+            Some(idx) => source.messages[..std::cmp::min(idx, source.messages.len())].to_vec(),
+            None => source.messages.clone(),
+        };
+
+        let id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now();
+        let branched = Session {
+            id: id.clone(),
+            created_at: now,
+            updated_at: now,
+            messages,
+            metadata: SessionMetadata::new(source.metadata.model.clone()),
+        };
+        active.insert(id, branched.clone());
+        Some(branched)
+    }
 }

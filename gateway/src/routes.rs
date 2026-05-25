@@ -346,7 +346,6 @@ pub async fn delete_session(
     Path(session_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ChatApiError> {
     if state.sessions.delete(&session_id) {
-        // Broadcast session deletion
         state.events.send(WsEvent::SessionEvent {
             session_id: session_id.clone(),
             action: "deleted".to_string(),
@@ -355,6 +354,119 @@ pub async fn delete_session(
     } else {
         Err(ChatApiError::InvalidRequest(format!("Session not found: {}", session_id)))
     }
+}
+
+/// POST /sessions/:id/branch — fork a conversation at a given message index.
+pub async fn branch_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let at_message = body.get("at_message").and_then(|v| v.as_u64()).map(|v| v as usize);
+
+    match state.sessions.branch(&session_id, at_message) {
+        Some(session) => {
+            state.events.send(WsEvent::SessionEvent {
+                session_id: session.id.clone(),
+                action: "created".to_string(),
+            });
+            Ok(Json(serde_json::json!({
+                "id": session.id,
+                "model": session.metadata.model,
+                "message_count": session.messages.len(),
+                "created_at": session.created_at,
+            })))
+        }
+        None => Err(ChatApiError::InvalidRequest(format!("Session not found: {}", session_id))),
+    }
+}
+
+/// POST /tools/approve — approve or reject a pending tool call.
+/// Body: {"tool_call_id": "...", "approved": true/false}
+pub async fn approve_tool(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let tool_call_id = body.get("tool_call_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ChatApiError::InvalidRequest("tool_call_id required".to_string()))?
+        .to_string();
+    let approved = body.get("approved")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Remove from pending queue
+    let pending = state.pending_tools.lock().await;
+    let tool_call = pending.get(&tool_call_id).cloned();
+    drop(pending);
+
+    let tool_call = match tool_call {
+        Some(tc) => tc,
+        None => return Err(ChatApiError::InvalidRequest(format!("No pending tool call: {}", tool_call_id))),
+    };
+
+    if !approved {
+        // Remove from pending and broadcast rejection
+        state.pending_tools.lock().await.remove(&tool_call_id);
+        state.events.send(WsEvent::ToolResult {
+            session_id: String::new(),
+            tool_name: tool_call.function.name.clone(),
+            result: "Tool call rejected by user".to_string(),
+            is_error: true,
+        });
+        return Ok(Json(serde_json::json!({
+            "status": "rejected",
+            "tool_call_id": tool_call_id,
+        })));
+    }
+
+    // Execute the approved tool
+    let config = state.config.read().await;
+    let working_dir = config.working_dir();
+    drop(config);
+
+    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    let ctx = chatapi_shared::traits::ToolContext {
+        session_id: String::new(),
+        working_dir,
+        env: std::collections::HashMap::new(),
+    };
+
+    let (result_text, is_error) = match state.tools.execute(&tool_call.function.name, args, &ctx).await {
+        Ok(result) => {
+            let text = match &result {
+                chatapi_shared::traits::ToolResult::Text(t) => t.clone(),
+                chatapi_shared::traits::ToolResult::Diff { old, new, path } => {
+                    format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new)
+                }
+                chatapi_shared::traits::ToolResult::Error { message, .. } => {
+                    format!("Error: {}", message)
+                }
+            };
+            (text, false)
+        }
+        Err(e) => (format!("Tool error: {}", e), true),
+    };
+
+    // Remove from pending
+    state.pending_tools.lock().await.remove(&tool_call_id);
+
+    // Broadcast result
+    state.events.send(WsEvent::ToolResult {
+        session_id: String::new(),
+        tool_name: tool_call.function.name.clone(),
+        result: result_text.clone(),
+        is_error,
+    });
+
+    Ok(Json(serde_json::json!({
+        "status": "executed",
+        "tool_call_id": tool_call_id,
+        "result": result_text,
+        "is_error": is_error,
+    })))
 }
 
 /// GET /tools
@@ -420,6 +532,111 @@ pub async fn update_config(
     let _ = config.save(std::path::Path::new(&config_path));
 
     Ok(Json(serde_json::json!({"updated": true})))
+}
+
+/// GET /files?path=.
+pub async fn list_files(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let config = state.config.read().await;
+    let working_dir = config.working_dir();
+    drop(config);
+
+    let rel_path = params.get("path").map(|s| s.as_str()).unwrap_or(".");
+    let abs_path = working_dir.join(rel_path);
+
+    // Security: prevent directory traversal
+    if !abs_path.starts_with(&working_dir) {
+        return Err(ChatApiError::InvalidRequest("Path outside working directory".to_string()));
+    }
+
+    if !abs_path.is_dir() {
+        return Err(ChatApiError::InvalidRequest("Not a directory".to_string()));
+    }
+
+    let mut entries = Vec::new();
+    let dir = tokio::fs::read_dir(&abs_path).await
+        .map_err(|e| ChatApiError::AutomationFailure(e.to_string()))?;
+
+    let mut dir_stream = dir;
+    while let Some(entry) = dir_stream.next_entry().await
+        .map_err(|e| ChatApiError::AutomationFailure(e.to_string()))?
+    {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') && name != ".knowledge" {
+            continue; // Skip hidden files except .knowledge
+        }
+        let is_dir = entry.file_type().await
+            .map(|ft| ft.is_dir())
+            .unwrap_or(false);
+        let rel = if rel_path == "." {
+            name.clone()
+        } else {
+            format!("{}/{}", rel_path, name)
+        };
+        entries.push(serde_json::json!({
+            "name": name,
+            "path": rel,
+            "isDir": is_dir,
+        }));
+    }
+
+    // Sort: dirs first, then alphabetically
+    entries.sort_by(|a, b| {
+        let a_dir = a["isDir"].as_bool().unwrap_or(false);
+        let b_dir = b["isDir"].as_bool().unwrap_or(false);
+        match (a_dir, b_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a["name"].as_str().cmp(&b["name"].as_str()),
+        }
+    });
+
+    Ok(Json(serde_json::json!({
+        "path": rel_path,
+        "entries": entries,
+    })))
+}
+
+/// GET /files/read?path=Cargo.toml
+pub async fn read_file(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let config = state.config.read().await;
+    let working_dir = config.working_dir();
+    drop(config);
+
+    let rel_path = params.get("path").ok_or_else(|| {
+        ChatApiError::InvalidRequest("Missing 'path' parameter".to_string())
+    })?;
+
+    let abs_path = working_dir.join(rel_path);
+
+    // Security: prevent directory traversal
+    if !abs_path.starts_with(&working_dir) {
+        return Err(ChatApiError::InvalidRequest("Path outside working directory".to_string()));
+    }
+
+    if !abs_path.is_file() {
+        return Err(ChatApiError::InvalidRequest("Not a file".to_string()));
+    }
+
+    // Check blocked paths
+    let config = state.config.read().await;
+    if chatapi_rules::filter::is_path_blocked(rel_path, &config) {
+        return Err(ChatApiError::InvalidRequest("Path is blocked by config".to_string()));
+    }
+    drop(config);
+
+    let content = tokio::fs::read_to_string(&abs_path).await
+        .map_err(|e| ChatApiError::AutomationFailure(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "path": rel_path,
+        "content": content,
+    })))
 }
 
 fn estimate_tokens(text: &str) -> u32 {

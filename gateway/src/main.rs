@@ -125,11 +125,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions", post(routes::create_session))
         .route("/sessions/{session_id}", get(routes::get_session))
         .route("/sessions/{session_id}", delete(routes::delete_session))
+        .route("/sessions/{session_id}/branch", post(routes::branch_session))
         // Tools
         .route("/tools", get(routes::list_tools))
+        // Files
+        .route("/files", get(routes::list_files))
         // Config
         .route("/config", get(routes::get_config))
         .route("/config", put(routes::update_config))
+        // File browser
+        .route("/files", get(routes::list_files))
+        .route("/files/read", get(routes::read_file))
         // WebSocket
         .route("/ws", get(ws::ws_handler))
         .layer(cors)

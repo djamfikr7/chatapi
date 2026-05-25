@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use chatapi_mcp::McpClient;
 use chatapi_rules::ChatApiConfig;
 use chatapi_sessions::SessionManager;
+use chatapi_shared::ToolCall;
 use chatapi_shared::traits::TargetProvider;
 use chatapi_tools::ToolRegistry;
 
@@ -22,6 +24,8 @@ pub struct AppState {
     pub mcp_clients: Arc<Vec<Arc<McpClient>>>,
     /// WebSocket event broadcaster.
     pub events: EventBroadcaster,
+    /// Pending tool calls awaiting user approval.
+    pub pending_tools: Arc<tokio::sync::Mutex<HashMap<String, ToolCall>>>,
 }
 
 impl AppState {
@@ -39,6 +43,7 @@ impl AppState {
             sessions: Arc::new(sessions),
             mcp_clients: Arc::new(mcp_clients),
             events: EventBroadcaster::new(256),
+            pending_tools: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 }
