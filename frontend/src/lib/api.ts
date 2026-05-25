@@ -71,10 +71,19 @@ export interface HealthStatus {
   tool_count: number;
 }
 
+export interface McpServer {
+  name: string;
+  command: string;
+  args: string[];
+}
+
 export interface ConfigData {
   target: {
     mode: string;
     model: string;
+    mcp?: {
+      servers: McpServer[];
+    };
   };
   rules: {
     system_prompt?: string;

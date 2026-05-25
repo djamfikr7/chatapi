@@ -4,7 +4,7 @@ import {
   Show,
   For,
 } from "solid-js";
-import { fetchConfig, updateConfig, type ConfigData } from "../lib/api";
+import { fetchConfig, updateConfig, type ConfigData, type McpServer } from "../lib/api";
 
 interface ConfigPanelProps {
   open: boolean;
