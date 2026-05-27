@@ -12,6 +12,7 @@ import { MonacoEditor } from "./components/MonacoEditor";
 import { Terminal } from "./components/Terminal";
 import { SessionList } from "./components/SessionList";
 import { ConfigPanel } from "./components/ConfigPanel";
+import { AgentPanel } from "./components/AgentPanel";
 import type { ChatMessage, Session } from "./lib/api";
 import { fetchHealth, fetchSessions, createSession, getSession } from "./lib/api";
 import {
@@ -50,7 +51,7 @@ export default function App() {
   const [configOpen, setConfigOpen] = createSignal(false);
 
   // Left sidebar tab
-  const [leftTab, setLeftTab] = createSignal<"files" | "sessions">("files");
+  const [leftTab, setLeftTab] = createSignal<"files" | "sessions" | "agents">("files");
 
   // Panel resize state
   const [leftWidth, setLeftWidth] = createSignal(250);
@@ -325,6 +326,12 @@ export default function App() {
             >
               Sessions
             </button>
+            <button
+              class={`flex-1 text-xs py-1.5 px-2 ${leftTab() === "agents" ? "bg-ide-panel text-ide-text" : "text-ide-muted hover:text-ide-text"}`}
+              onClick={() => setLeftTab("agents")}
+            >
+              Agents
+            </button>
           </div>
 
           {/* Tab content */}
@@ -343,6 +350,9 @@ export default function App() {
                 onDelete={handleDeleteSession}
                 onNew={handleNewSession}
               />
+            </Show>
+            <Show when={leftTab() === "agents"}>
+              <AgentPanel />
             </Show>
           </div>
         </div>

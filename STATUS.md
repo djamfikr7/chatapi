@@ -42,6 +42,14 @@ User / API Request
 - **TaskState** — shared key-value context between sub-agents
 - **OrchestratorEvent** — real-time events for WebSocket monitoring
 
+### Frontend Agent Dashboard
+- **AgentPanel.tsx** — task submission form, task list with status dots, step detail view
+- **agent.ts** — API client for all 5 agent endpoints
+- **Agents tab** in left sidebar (alongside Files and Sessions)
+- Auto-refresh every 3s for live task monitoring
+- Cancel running tasks from the UI
+- Step-level result/error display with role icons
+
 ### New API endpoints (22 total)
 | Method | Path | Description |
 |--------|------|-------------|
