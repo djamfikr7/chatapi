@@ -16,6 +16,7 @@ chatapi-targets = { path = "../targets" }
 chatapi-tools = { path = "../tools" }
 chatapi-mcp = { path = "../mcp" }
 chatapi-agents = { path = "../agents" }
+async-stream = "0.3"
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true

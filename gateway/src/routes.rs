@@ -670,6 +670,83 @@ pub async fn execute_tool(
     }
 }
 
+/// GET /tools/:name — get a tool's schema.
+pub async fn get_tool_schema(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let tools = state.tools.list_tools();
+    let tool = tools.iter().find(|(n, _, _)| *n == name);
+    match tool {
+        Some((name, desc, schema)) => Ok(Json(serde_json::json!({
+            "name": name,
+            "description": desc,
+            "parameters": schema,
+        }))),
+        None => Err(ChatApiError::InvalidRequest(format!("Tool '{}' not found", name))),
+    }
+}
+
+/// POST /tools/:name/test — test a tool with sample input.
+pub async fn test_tool(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let args = body.get("args").cloned()
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    let config = state.config.read().await;
+    let working_dir = config.working_dir();
+    drop(config);
+
+    let ctx = chatapi_shared::traits::ToolContext {
+        session_id: String::new(),
+        working_dir,
+        env: std::collections::HashMap::new(),
+    };
+
+    match state.tools.execute(&name, args, &ctx).await {
+        Ok(result) => {
+            let (text, is_error) = match &result {
+                chatapi_shared::traits::ToolResult::Text(t) => (t.clone(), false),
+                chatapi_shared::traits::ToolResult::Diff { old, new, path } => {
+                    (format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new), false)
+                }
+                chatapi_shared::traits::ToolResult::Error { message, .. } => {
+                    (format!("Error: {}", message), true)
+                }
+            };
+            Ok(Json(serde_json::json!({
+                "result": text,
+                "is_error": is_error,
+            })))
+        }
+        Err(e) => Err(ChatApiError::AutomationFailure(format!("Tool error: {}", e))),
+    }
+}
+
+/// GET /logs — SSE stream of tool execution logs.
+pub async fn logs_stream(
+    State(state): State<AppState>,
+) -> Sse<impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    let mut rx = state.events.subscribe();
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        yield Ok(axum::response::sse::Event::default().data(json));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Sse::new(stream)
+}
+
 // ── Agent endpoints ──────────────────────────────────────────────
 
 /// POST /agents/tasks — submit a high-level task to the orchestrator.

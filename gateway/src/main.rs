@@ -136,11 +136,15 @@ async fn main() -> anyhow::Result<()> {
         // Tools
         .route("/tools", get(routes::list_tools))
         .route("/tools/execute", post(routes::execute_tool))
+        .route("/tools/{name}", get(routes::get_tool_schema))
+        .route("/tools/{name}/test", post(routes::test_tool))
         // Files
         .route("/files", get(routes::list_files))
         // Config
         .route("/config", get(routes::get_config))
         .route("/config", put(routes::update_config))
+        // Logs
+        .route("/logs", get(routes::logs_stream))
         // Agent management
         .route("/agents/tasks", post(routes::agent_submit_task))
         .route("/agents/tasks", get(routes::agent_list_tasks))
