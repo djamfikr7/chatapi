@@ -40,7 +40,11 @@ impl CodingAgent {
     }
 
     fn tool_schemas(&self) -> Vec<chatapi_shared::Tool> {
-        let names = self.available_tools();
+        let names = if self.config.tool_filter.is_empty() {
+            self.available_tools()
+        } else {
+            self.config.tool_filter.clone()
+        };
         self.ctx
             .tools
             .schemas()

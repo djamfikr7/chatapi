@@ -21,6 +21,8 @@ pub struct AgentContext {
 pub struct AgentConfig {
     /// System prompt that defines the agent's behavior.
     pub system_prompt: String,
+    /// Tool names this agent is allowed to use. If empty, uses the agent's default.
+    pub tool_filter: Vec<String>,
     /// Maximum LLM turns before the agent gives up.
     pub max_turns: usize,
     /// Maximum retries on transient errors.
@@ -33,6 +35,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             system_prompt: String::new(),
+            tool_filter: Vec::new(),
             max_turns: 20,
             max_retries: 3,
             step_timeout_secs: 300,

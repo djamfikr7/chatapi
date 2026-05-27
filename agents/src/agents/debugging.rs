@@ -16,7 +16,19 @@ pub struct DebuggingAgent {
 }
 
 impl DebuggingAgent {
-    pub fn new(ctx: Arc<AgentContext>, config: AgentConfig) -> Self {
+    pub fn new(ctx: Arc<AgentContext>, mut config: AgentConfig) -> Self {
+        config.system_prompt = "You are an expert debugging agent. You investigate failures \
+            methodically: reproduce the issue, read error messages and stack traces, \
+            examine relevant source code, check git history for recent changes, \
+            and propose targeted fixes. You use git_diff and git_status to understand \
+            what changed. Always verify your fix by running the failing test or command \
+            after applying changes."
+            .to_string();
+        config.tool_filter = vec![
+            "read_file".into(), "write_file".into(), "edit_file".into(),
+            "list_dir".into(), "run_command".into(), "grep_code".into(),
+            "git_status".into(), "git_diff".into(),
+        ];
         Self {
             inner: CodingAgent::new(ctx, config),
         }

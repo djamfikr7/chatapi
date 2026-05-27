@@ -16,7 +16,17 @@ pub struct WikiAgent {
 }
 
 impl WikiAgent {
-    pub fn new(ctx: Arc<AgentContext>, config: AgentConfig) -> Self {
+    pub fn new(ctx: Arc<AgentContext>, mut config: AgentConfig) -> Self {
+        config.system_prompt = "You are a knowledge base agent. You track project progress, \
+            update documentation, and maintain the .knowledge/ directory. You read specs, \
+            STATUS.md, and source code to understand what's been built and what's next. \
+            You write clear, concise markdown that serves as a living reference for the \
+            development team. Always keep STATUS.md up to date with the current state."
+            .to_string();
+        config.tool_filter = vec![
+            "read_file".into(), "write_file".into(), "edit_file".into(),
+            "list_dir".into(), "grep_code".into(),
+        ];
         Self {
             inner: CodingAgent::new(ctx, config),
         }

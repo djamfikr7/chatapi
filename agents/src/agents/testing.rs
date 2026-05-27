@@ -16,7 +16,18 @@ pub struct TestingAgent {
 }
 
 impl TestingAgent {
-    pub fn new(ctx: Arc<AgentContext>, config: AgentConfig) -> Self {
+    pub fn new(ctx: Arc<AgentContext>, mut config: AgentConfig) -> Self {
+        config.system_prompt = "You are an expert testing agent. You write comprehensive, \
+            correct tests for Rust code. You use the available tools to read source code, \
+            write test files, and run `cargo test` to verify everything passes. \
+            Focus on: unit tests, integration tests, edge cases, error paths, and \
+            property-based testing where appropriate. Always run tests after writing them \
+            and fix any failures."
+            .to_string();
+        config.tool_filter = vec![
+            "read_file".into(), "write_file".into(), "edit_file".into(),
+            "list_dir".into(), "run_command".into(), "grep_code".into(),
+        ];
         Self {
             inner: CodingAgent::new(ctx, config),
         }

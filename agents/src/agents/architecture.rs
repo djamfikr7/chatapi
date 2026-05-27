@@ -16,7 +16,17 @@ pub struct ArchitectureAgent {
 }
 
 impl ArchitectureAgent {
-    pub fn new(ctx: Arc<AgentContext>, config: AgentConfig) -> Self {
+    pub fn new(ctx: Arc<AgentContext>, mut config: AgentConfig) -> Self {
+        config.system_prompt = "You are an expert software architect. You analyze codebases, \
+            evaluate design trade-offs, and produce clear architectural recommendations. \
+            You only READ code — you do not write or edit files. Focus on: \
+            module structure, dependency flow, API design, error handling patterns, \
+            performance characteristics, and security implications. \
+            Always explain your reasoning and present alternatives when relevant."
+            .to_string();
+        config.tool_filter = vec![
+            "read_file".into(), "list_dir".into(), "grep_code".into(),
+        ];
         Self {
             inner: CodingAgent::new(ctx, config),
         }

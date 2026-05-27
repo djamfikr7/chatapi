@@ -16,7 +16,17 @@ pub struct GitHubAgent {
 }
 
 impl GitHubAgent {
-    pub fn new(ctx: Arc<AgentContext>, config: AgentConfig) -> Self {
+    pub fn new(ctx: Arc<AgentContext>, mut config: AgentConfig) -> Self {
+        config.system_prompt = "You are a GitHub integration agent. You manage the software \
+            development workflow: create branches, commit changes with clear messages, \
+            check git status and diffs, and prepare code for review. You use git commands \
+            via run_command. Always follow the project's commit conventions and ensure \
+            changes are well-organized before suggesting a push."
+            .to_string();
+        config.tool_filter = vec![
+            "read_file".into(), "list_dir".into(), "run_command".into(),
+            "git_status".into(), "git_diff".into(),
+        ];
         Self {
             inner: CodingAgent::new(ctx, config),
         }
