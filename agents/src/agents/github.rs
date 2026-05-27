@@ -25,7 +25,8 @@ impl GitHubAgent {
             .to_string();
         config.tool_filter = vec![
             "read_file".into(), "list_dir".into(), "run_command".into(),
-            "git_status".into(), "git_diff".into(),
+            "git_status".into(), "git_diff".into(), "git_log".into(),
+            "git_show".into(),
         ];
         Self {
             inner: CodingAgent::new(ctx, config),

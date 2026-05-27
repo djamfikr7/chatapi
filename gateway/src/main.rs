@@ -250,6 +250,9 @@ fn build_tool_registry() -> ToolRegistry {
     registry.register(Box::new(git_ops::GitStatus));
     registry.register(Box::new(git_ops::GitDiff));
     registry.register(Box::new(git_ops::GitCommit));
+    registry.register(Box::new(git_ops::GitLog));
+    registry.register(Box::new(git_ops::GitShow));
+    registry.register(Box::new(file_ops::ApplyPatch));
     registry.register(Box::new(search::GrepCode));
     registry
 }

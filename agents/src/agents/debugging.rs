@@ -26,8 +26,9 @@ impl DebuggingAgent {
             .to_string();
         config.tool_filter = vec![
             "read_file".into(), "write_file".into(), "edit_file".into(),
-            "list_dir".into(), "run_command".into(), "grep_code".into(),
-            "git_status".into(), "git_diff".into(),
+            "apply_patch".into(), "list_dir".into(), "run_command".into(),
+            "grep_code".into(), "git_status".into(), "git_diff".into(),
+            "git_log".into(), "git_show".into(),
         ];
         Self {
             inner: CodingAgent::new(ctx, config),

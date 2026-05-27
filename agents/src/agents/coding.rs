@@ -69,11 +69,14 @@ impl Agent for CodingAgent {
             "read_file".to_string(),
             "write_file".to_string(),
             "edit_file".to_string(),
+            "apply_patch".to_string(),
             "list_dir".to_string(),
             "run_command".to_string(),
             "grep_code".to_string(),
             "git_status".to_string(),
             "git_diff".to_string(),
+            "git_log".to_string(),
+            "git_show".to_string(),
         ]
     }
 
