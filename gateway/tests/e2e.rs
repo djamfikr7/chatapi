@@ -3,6 +3,7 @@
 //! These tests spin up the full Axum server in-process and test the
 //! OpenAI-compatible API endpoints via HTTP.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -178,6 +179,12 @@ async fn spawn_gateway() -> String {
         .route("/v1/providers", axum::routing::get(chatapi_gateway::routes::list_providers))
         .route("/config", axum::routing::get(chatapi_gateway::routes::get_config))
         .route("/config", axum::routing::put(chatapi_gateway::routes::update_config))
+        // Agent management
+        .route("/agents/tasks", axum::routing::post(chatapi_gateway::routes::agent_submit_task))
+        .route("/agents/tasks", axum::routing::get(chatapi_gateway::routes::agent_list_tasks))
+        .route("/agents/tasks/{task_id}", axum::routing::get(chatapi_gateway::routes::agent_get_task))
+        .route("/agents/tasks/{task_id}/cancel", axum::routing::post(chatapi_gateway::routes::agent_cancel_task))
+        .route("/agents/capabilities", axum::routing::get(chatapi_gateway::routes::agent_capabilities))
         .layer(
             tower_http::cors::CorsLayer::new()
                 .allow_origin(tower_http::cors::Any)
@@ -872,4 +879,158 @@ fn security_section_defaults_without_toml_key() {
     assert_eq!(config.security.chat_rate_limit, 60);
     assert_eq!(config.security.api_rate_limit, 120);
     assert_eq!(config.security.max_tool_output_bytes, 102_400);
+}
+
+// ── Agent endpoints ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn e2e_agent_capabilities_no_orchestrator() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/agents/capabilities", base))
+        .send().await.unwrap();
+    // Should return 400 when orchestrator is not configured
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn e2e_agent_submit_task_no_orchestrator() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/agents/tasks", base))
+        .json(&serde_json::json!({"description": "test task"}))
+        .send().await.unwrap();
+    // Should return 400 when orchestrator is not configured
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn e2e_agent_list_tasks_no_orchestrator() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/agents/tasks", base))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn e2e_agent_get_task_no_orchestrator() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/agents/tasks/some-id", base))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn e2e_agent_cancel_task_no_orchestrator() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/agents/tasks/some-id/cancel", base))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn e2e_agent_submit_task_missing_description() {
+    let base = spawn_gateway().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/agents/tasks", base))
+        .json(&serde_json::json!({}))
+        .send().await.unwrap();
+    // Missing description returns 400 (either orchestrator not configured or missing field)
+    assert!(resp.status().is_client_error());
+}
+
+// ── Agent endpoints with orchestrator ────────────────────────────
+
+/// Create a test AppState with an orchestrator and registered agents.
+fn create_test_state_with_orchestrator() -> AppState {
+    use chatapi_agents::{AgentConfig, Orchestrator};
+    use chatapi_agents::agents::{CodingAgent, ArchitectureAgent, TestingAgent, DebuggingAgent, GitHubAgent, WikiAgent};
+
+    let config = ChatApiConfig::default();
+    let tools = build_test_tools();
+    let sessions = SessionManager::new(Box::new(MemoryStore::new()));
+
+    let target = Arc::new(MockTarget);
+    let ctx = Arc::new(chatapi_agents::agent::AgentContext {
+        target: target.clone(),
+        tools: build_test_tools(),
+        working_dir: std::env::current_dir().unwrap_or_default(),
+    });
+
+    let mut orch = Orchestrator::new(ctx, AgentConfig::default());
+    // Register agents with default config
+    let agent_ctx = orch.ctx();
+    orch.register_agent_sync(Arc::new(CodingAgent::new(agent_ctx.clone(), AgentConfig::default())));
+    orch.register_agent_sync(Arc::new(ArchitectureAgent::new(agent_ctx.clone(), AgentConfig::default())));
+    orch.register_agent_sync(Arc::new(TestingAgent::new(agent_ctx.clone(), AgentConfig::default())));
+    orch.register_agent_sync(Arc::new(DebuggingAgent::new(agent_ctx.clone(), AgentConfig::default())));
+    orch.register_agent_sync(Arc::new(GitHubAgent::new(agent_ctx.clone(), AgentConfig::default())));
+    orch.register_agent_sync(Arc::new(WikiAgent::new(agent_ctx, AgentConfig::default())));
+
+    let mut state = AppState::new(config, MockTarget, tools, sessions, Vec::new());
+    state.orchestrator = Some(Arc::new(orch));
+    state
+}
+
+/// Spawn a gateway with orchestrator enabled.
+async fn spawn_gateway_with_orchestrator() -> String {
+    let state = create_test_state_with_orchestrator();
+
+    let app = axum::Router::new()
+        .route("/agents/tasks", axum::routing::post(chatapi_gateway::routes::agent_submit_task))
+        .route("/agents/tasks", axum::routing::get(chatapi_gateway::routes::agent_list_tasks))
+        .route("/agents/tasks/{task_id}", axum::routing::get(chatapi_gateway::routes::agent_get_task))
+        .route("/agents/tasks/{task_id}/cancel", axum::routing::post(chatapi_gateway::routes::agent_cancel_task))
+        .route("/agents/capabilities", axum::routing::get(chatapi_gateway::routes::agent_capabilities))
+        .layer(
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
+#[tokio::test]
+async fn e2e_agent_capabilities_with_orchestrator() {
+    let base = spawn_gateway_with_orchestrator().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/agents/capabilities", base))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agents = body["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 6);
+    // Check all roles are present
+    let roles: Vec<&str> = agents.iter().map(|a| a.as_str().unwrap()).collect();
+    assert!(roles.contains(&"Coding"));
+    assert!(roles.contains(&"Architecture"));
+    assert!(roles.contains(&"Testing"));
+    assert!(roles.contains(&"Debugging"));
+    assert!(roles.contains(&"GitHub"));
+    assert!(roles.contains(&"Wiki"));
+}
+
+#[tokio::test]
+async fn e2e_agent_list_tasks_empty() {
+    let base = spawn_gateway_with_orchestrator().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/agents/tasks", base))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["tasks"].as_array().unwrap().is_empty());
 }

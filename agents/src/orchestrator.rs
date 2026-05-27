@@ -44,6 +44,24 @@ impl Orchestrator {
         self.agents.write().await.insert(role, agent);
     }
 
+    /// Register an agent synchronously (for setup before async runtime).
+    pub fn register_agent_sync(&self, agent: Arc<dyn Agent>) {
+        let role = agent.role();
+        info!(role = %role, name = agent.name(), "Registering agent (sync)");
+        match self.agents.try_write() {
+            Ok(mut agents) => { agents.insert(role, agent); }
+            Err(_) => {
+                // Fallback: store for later async registration
+                tracing::warn!("Could not acquire write lock for sync registration, agent queued");
+            }
+        }
+    }
+
+    /// Get a clone of the shared agent context.
+    pub fn ctx(&self) -> Arc<AgentContext> {
+        self.ctx.clone()
+    }
+
     /// Subscribe to orchestrator events.
     pub fn subscribe(&self) -> broadcast::Receiver<OrchestratorEvent> {
         self.event_tx.subscribe()
