@@ -27,3 +27,8 @@ max_context_tokens = 4000
 [sessions]
 store = "memory"      # "memory" or "file"
 # path = ".chatapi/sessions"
+
+[security]
+chat_rate_limit = 60        # Max requests per minute for /v1/chat/completions
+api_rate_limit = 120        # Max requests per minute for other endpoints
+max_tool_output_bytes = 102400  # Max tool output size (100KB)

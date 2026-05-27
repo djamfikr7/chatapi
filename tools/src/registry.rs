@@ -27,4 +27,16 @@ impl ToolRegistry {
     pub fn names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.name().to_string()).collect()
     }
+
+    /// Return tool definitions in OpenAI `Tool` format for function calling.
+    pub fn schemas(&self) -> Vec<chatapi_shared::Tool> {
+        self.tools.iter().map(|t| chatapi_shared::Tool {
+            tool_type: "function".to_string(),
+            function: chatapi_shared::FunctionDefinition {
+                name: t.name().to_string(),
+                description: Some(t.description().to_string()),
+                parameters: Some(t.parameters_schema()),
+            },
+        }).collect()
+    }
 }

@@ -18,6 +18,8 @@ pub struct ChatApiConfig {
     pub dashboard: DashboardSection,
     #[serde(default)]
     pub models: ModelsSection,
+    #[serde(default)]
+    pub security: SecuritySection,
 }
 
 // ── Target section ──────────────────────────────────────────────────
@@ -110,6 +112,35 @@ pub struct DashboardSection {
     pub port: Option<u16>,
     pub theme: Option<String>,
 }
+
+// ── Security section ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecuritySection {
+    /// Max requests per minute for chat completions (default: 60)
+    #[serde(default = "default_chat_rate_limit")]
+    pub chat_rate_limit: u32,
+    /// Max requests per minute for other endpoints (default: 120)
+    #[serde(default = "default_api_rate_limit")]
+    pub api_rate_limit: u32,
+    /// Max output size in bytes for tool results (default: 102400 = 100KB)
+    #[serde(default = "default_max_tool_output_bytes")]
+    pub max_tool_output_bytes: usize,
+}
+
+impl Default for SecuritySection {
+    fn default() -> Self {
+        Self {
+            chat_rate_limit: default_chat_rate_limit(),
+            api_rate_limit: default_api_rate_limit(),
+            max_tool_output_bytes: default_max_tool_output_bytes(),
+        }
+    }
+}
+
+fn default_chat_rate_limit() -> u32 { 60 }
+fn default_api_rate_limit() -> u32 { 120 }
+fn default_max_tool_output_bytes() -> usize { 102_400 }
 
 // ── Models section (multi-provider support) ─────────────────────────
 
@@ -274,5 +305,49 @@ system_prompt = "Be concise."
         assert_eq!(config.target.mode, "mcp");
         assert_eq!(config.target.model, "deepseek-chat"); // default
         assert_eq!(config.sessions.store, "memory"); // default
+    }
+
+    #[test]
+    fn test_security_defaults() {
+        let config = ChatApiConfig::default();
+        assert_eq!(config.security.chat_rate_limit, 60);
+        assert_eq!(config.security.api_rate_limit, 120);
+        assert_eq!(config.security.max_tool_output_bytes, 102_400);
+    }
+
+    #[test]
+    fn test_security_partial_config() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, r#"
+[target]
+mode = "browser"
+
+[security]
+chat_rate_limit = 30
+"#).unwrap();
+
+        let config = ChatApiConfig::load(tmp.path()).unwrap();
+        assert_eq!(config.security.chat_rate_limit, 30);
+        assert_eq!(config.security.api_rate_limit, 120); // default
+        assert_eq!(config.security.max_tool_output_bytes, 102_400); // default
+    }
+
+    #[test]
+    fn test_security_full_config() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, r#"
+[target]
+mode = "browser"
+
+[security]
+chat_rate_limit = 10
+api_rate_limit = 50
+max_tool_output_bytes = 51200
+"#).unwrap();
+
+        let config = ChatApiConfig::load(tmp.path()).unwrap();
+        assert_eq!(config.security.chat_rate_limit, 10);
+        assert_eq!(config.security.api_rate_limit, 50);
+        assert_eq!(config.security.max_tool_output_bytes, 51200);
     }
 }

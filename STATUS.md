@@ -1,31 +1,65 @@
 # ChatAPI — Project Status
-**Date:** 2026-05-25
+**Date:** 2026-05-27
 **Branch:** master
-**Tests:** 82 passing (shared:31, gateway:23, rules:16, ringbuf:6, sessions:6)
+**Tests:** 98 passing (shared:31, gateway:36, rules:19, ringbuf:6, sessions:6)
+**Crates:** 10 (gateway, shared, tools, targets, sessions, rules, ringbuf, mcp, agents, frontend)
 **GitHub:** https://github.com/djamfikr7/chatapi
 
 ---
 
-## DONE — Full Platform Complete
+## Phase 7: Multi-Agent Orchestration Framework ✓
 
-### Phase 1-2: Core + Integration ✓
-- 9 workspace crates, 82 tests
-- 10 built-in tools + MCP tool discovery
-- Rules engine, session management, gateway
+### Architecture
+```
+User / API Request
+       │
+       ▼
+┌──────────────┐
+│  Orchestrator │ ◄── Decomposes tasks via LLM, manages lifecycle
+└──────┬───────┘
+       │ spawns sequentially
+       ├──────────────┬──────────────┬──────────────┐
+       ▼              ▼              ▼              ▼
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│  Coding   │  │  Arch     │  │  Testing  │  │  Debugging│
+│  Agent    │  │  Agent    │  │  Agent    │  │  Agent    │
+└─────┬────┘  └─────┬────┘  └─────┬────┘  └─────┬────┘
+      │             │             │             │
+      ▼             ▼             ▼             ▼
+  ToolRegistry  read-only    ToolRegistry  ToolRegistry
+  TargetRouter  analysis     + run tests   + git tools
+```
 
-### Phase 3: Frontend IDE ✓
-- SolidJS: Monaco editor, xterm.js terminal, chat panel, file tree
-- WebSocket for real-time streaming + terminal
-- CDP engine wired as TargetProvider (browser mode)
+### New crate: `agents/`
+- **Agent trait** — role(), name(), available_tools(), run()
+- **CodingAgent** — full agentic loop (LLM → tool_calls → execute → result → LLM)
+- **ArchitectureAgent** — read-only tools for codebase analysis
+- **TestingAgent** — write_file + run_command for test authoring
+- **DebuggingAgent** — full tool access + git for failure investigation
+- **GitHubAgent** — git + command tools for PR/issue management
+- **WikiAgent** — file ops for progress tracking and docs
+- **Orchestrator** — LLM-driven task decomposition, sequential step execution, event broadcasting
+- **TaskState** — shared key-value context between sub-agents
+- **OrchestratorEvent** — real-time events for WebSocket monitoring
 
-### Phase 4: Production Ready ✓
-- Static file serving, Docker Compose, Chrome auto-launch
-- File browser API, session branching, config UI
+### New API endpoints (22 total)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/agents/tasks` | Submit high-level task |
+| GET | `/agents/tasks` | List all tasks |
+| GET | `/agents/tasks/:id` | Get task detail with steps |
+| POST | `/agents/tasks/:id/cancel` | Cancel running task |
+| GET | `/agents/capabilities` | List registered agent types |
 
-### Phase 5: Multi-Model + Polish ✓
-- Multi-model provider configuration
-- Tool execution result display (diff view, command output)
-- 17 API endpoints
+### How it works
+1. User submits task description via POST /agents/tasks
+2. Orchestrator uses LLM to decompose into steps with agent role assignments
+3. Steps execute sequentially — each step routed to the right agent
+4. Each agent runs its own LLM loop with role-specific tool subset
+5. Sub-agents share context via TaskState key-value store
+6. All events broadcast via WebSocket for real-time monitoring
+
+---
 
 ## QUICK START
 
@@ -47,36 +81,47 @@ docker compose up --build
 LAUNCH_CHROME=1 cargo run --bin gateway
 ```
 
-## ARCHITECTURE
-
-```
-Browser (:8090)          Gateway (:8090)
-┌──────────────┐         ┌──────────────────┐
-│ SolidJS IDE  │───────▶│ Axum (17 routes) │
-│              │◀───────│                  │
-│ - Monaco     │   SSE  │ - TargetRouter   │
-│ - xterm.js   │   WS   │   ├─ ApiTarget   │
-│ - Chat panel │◀──────▶│   └─ BrowserTarget│
-│ - File tree  │        │ - ToolRegistry   │
-│ - Config UI  │        │ - SessionManager │
-│ - Tool cards │        │ - Rules engine   │
-│              │        │ - MCP clients    │
-│              │        │ - EventBroadcaster│
-└──────────────┘        └──────────────────┘
-```
-
-## API (17 endpoints)
+## API ENDPOINTS (22)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /v1/chat/completions | OpenAI-compatible chat |
-| GET | /v1/models | List all models |
-| GET | /v1/providers | List providers |
+| POST | /v1/chat/completions | Chat (stream + non-stream, tool use) |
+| GET | /v1/models | List available models |
+| GET | /v1/providers | List configured providers |
 | GET | /health | Health check |
-| GET/POST/DELETE | /sessions | Session CRUD |
-| POST | /sessions/:id/branch | Fork session |
-| GET/POST | /tools | List/execute tools |
-| GET/PUT | /config | Read/update config |
-| GET | /files, /files/read | File browser |
+| GET | /sessions | List sessions |
+| POST | /sessions | Create session |
+| GET | /sessions/:id | Get session |
+| DELETE | /sessions/:id | Delete session |
+| POST | /sessions/:id/branch | Branch session |
+| GET | /tools | List tools |
+| POST | /tools/execute | Execute tool directly |
+| GET | /files | File browser |
+| GET | /config | Get config |
+| PUT | /config | Update config |
 | GET | /ws | WebSocket events |
 | GET | /ws/terminal | WebSocket terminal |
+| POST | /agents/tasks | Submit agent task |
+| GET | /agents/tasks | List agent tasks |
+| GET | /agents/tasks/:id | Get agent task detail |
+| POST | /agents/tasks/:id/cancel | Cancel agent task |
+| GET | /agents/capabilities | List agent types |
+
+## CONFIG
+
+```toml
+[target]
+mode = "api"          # "api" or "browser"
+model = "deepseek-chat"
+
+[rules]
+system_prompt = "You are a coding assistant."
+
+[security]
+chat_rate_limit = 60
+api_rate_limit = 120
+max_tool_output_bytes = 102400
+
+[sessions]
+store = "memory"      # "memory" or "file"
+```

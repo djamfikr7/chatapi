@@ -13,6 +13,7 @@ use chatapi_tools::ToolRegistry;
 use chatapi_shared::target::TargetConfig;
 use chatapi_shared::target::Target as TargetKind;
 
+use chatapi_gateway::rate_limit::{TwoTierRateLimiter, rate_limit_middleware};
 use chatapi_gateway::routes;
 use chatapi_gateway::state::AppState;
 use chatapi_gateway::ws;
@@ -32,9 +33,12 @@ async fn main() -> anyhow::Result<()> {
     let config = ChatApiConfig::load_or_default(Path::new(&config_path));
     tracing::info!(mode = %config.target.mode, model = %config.target.model, "Loaded config");
 
+    // Read rate limit config before moving state
+    let chat_rate = config.security.chat_rate_limit;
+    let api_rate = config.security.api_rate_limit;
+
     // Build target from config
     let target = if config.target.mode == "api" {
-        // API mode: use direct API endpoint
         let api_key = config.target.api.as_ref().and_then(|a| {
             std::env::var(&a.api_key_env).ok()
         });
@@ -50,13 +54,11 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Target: API mode");
         TargetRouter::new(&target_config)
     } else {
-        // Browser mode: try to connect to Chrome via CDP
         let chrome_port = std::env::var("CHROME_DEBUG_PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(9222);
 
-        // Auto-launch Chrome if LAUNCH_CHROME=1
         if std::env::var("LAUNCH_CHROME").ok().as_deref() == Some("1") {
             if let Err(e) = launch_chrome(chrome_port).await {
                 tracing::warn!(error = %e, "Failed to auto-launch Chrome");
@@ -101,6 +103,10 @@ async fn main() -> anyhow::Result<()> {
     // Create application state
     let state = AppState::new(config, target, tools, sessions, mcp_clients);
 
+    // Rate limiter — per-IP, two-tier (chat vs general API)
+    let rate_limiter = TwoTierRateLimiter::new(chat_rate, api_rate);
+    tracing::info!(chat_per_min = chat_rate, api_per_min = api_rate, "Rate limiting enabled");
+
     // CORS layer
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -135,12 +141,19 @@ async fn main() -> anyhow::Result<()> {
         // Config
         .route("/config", get(routes::get_config))
         .route("/config", put(routes::update_config))
+        // Agent management
+        .route("/agents/tasks", post(routes::agent_submit_task))
+        .route("/agents/tasks", get(routes::agent_list_tasks))
+        .route("/agents/tasks/{task_id}", get(routes::agent_get_task))
+        .route("/agents/tasks/{task_id}/cancel", post(routes::agent_cancel_task))
+        .route("/agents/capabilities", get(routes::agent_capabilities))
         // WebSocket
         .route("/ws", get(ws::ws_handler))
         .route("/ws/terminal", get(ws::terminal_handler))
+        .layer(axum::middleware::from_fn(rate_limit_middleware))
+        .layer(axum::extract::Extension(rate_limiter))
         .layer(cors)
         .with_state(state)
-        // Serve frontend static files (must be last — catches all non-API routes)
         .fallback_service(serve_frontend);
 
     // Bind and serve
@@ -182,12 +195,10 @@ async fn find_free_port(start: u16) -> u16 {
 
 /// Launch Chrome with remote debugging enabled.
 async fn launch_chrome(port: u16) -> anyhow::Result<()> {
-    // Check if Chrome is already running
     if chrome_running_on_port(port).await {
         return Ok(());
     }
 
-    // Find a free port if the requested one is taken
     let actual_port = find_free_port(port).await;
     if actual_port != port {
         tracing::warn!(requested = port, actual = actual_port, "Port {} in use, using {}", port, actual_port);
@@ -216,7 +227,6 @@ async fn launch_chrome(port: u16) -> anyhow::Result<()> {
         .arg("--safebrowsing-disable-auto-update")
         .spawn()?;
 
-    // Wait for Chrome to start
     for _ in 0..10 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if chrome_running_on_port(actual_port).await {

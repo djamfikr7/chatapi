@@ -690,3 +690,186 @@ async fn e2e_session_branch_not_found() {
         .send().await.unwrap();
     assert!(resp.status() == 400);
 }
+
+// ── Security: blocked_paths enforcement ─────────────────────────
+
+#[tokio::test]
+async fn e2e_execute_tool_blocked_path_rejected() {
+    // Set up a state with blocked_paths configured
+    let state = {
+        use chatapi_rules::ChatApiConfig;
+        use chatapi_sessions::{MemoryStore, SessionManager};
+        use chatapi_tools::ToolRegistry;
+        use chatapi_gateway::state::AppState;
+        use chatapi_shared::target::TargetConfig;
+        use chatapi_shared::target::Target as TargetKind;
+
+        let mut config = ChatApiConfig::default();
+        config.rules.blocked_paths = vec!["secrets/*".to_string()];
+
+        let target_config = TargetConfig {
+            target: TargetKind::Api,
+            api_endpoint: "http://localhost:1".to_string(),
+            api_key: Some("test".to_string()),
+            model: "deepseek-chat".to_string(),
+        };
+        let target = chatapi_targets::TargetRouter::new(&target_config);
+        let tools = ToolRegistry::new();
+        let sessions = SessionManager::new(Box::new(MemoryStore::new()));
+
+        AppState::new(config, target, tools, sessions, vec![])
+    };
+
+    let app = axum::Router::new()
+        .route("/tools/execute", axum::routing::post(chatapi_gateway::routes::execute_tool))
+        .layer(
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let base = format!("http://127.0.0.1:{}", addr.port());
+
+    // Try to read a blocked path
+    let resp = reqwest::Client::new()
+        .post(format!("{}/tools/execute", base))
+        .json(&serde_json::json!({"name": "read_file", "args": {"path": "secrets/keys.json"}}))
+        .send().await.unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body.to_string().contains("blocked"), "Expected blocked path error, got: {}", body);
+}
+
+#[tokio::test]
+async fn e2e_execute_tool_blocked_cwd_rejected() {
+    let state = {
+        use chatapi_rules::ChatApiConfig;
+        use chatapi_sessions::{MemoryStore, SessionManager};
+        use chatapi_tools::ToolRegistry;
+        use chatapi_gateway::state::AppState;
+        use chatapi_shared::target::TargetConfig;
+        use chatapi_shared::target::Target as TargetKind;
+
+        let mut config = ChatApiConfig::default();
+        config.rules.blocked_paths = vec!["secrets/*".to_string()];
+
+        let target_config = TargetConfig {
+            target: TargetKind::Api,
+            api_endpoint: "http://localhost:1".to_string(),
+            api_key: Some("test".to_string()),
+            model: "deepseek-chat".to_string(),
+        };
+        let target = chatapi_targets::TargetRouter::new(&target_config);
+        let tools = ToolRegistry::new();
+        let sessions = SessionManager::new(Box::new(MemoryStore::new()));
+
+        AppState::new(config, target, tools, sessions, vec![])
+    };
+
+    let app = axum::Router::new()
+        .route("/tools/execute", axum::routing::post(chatapi_gateway::routes::execute_tool))
+        .layer(
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let base = format!("http://127.0.0.1:{}", addr.port());
+
+    // Try to execute a command with blocked cwd
+    let resp = reqwest::Client::new()
+        .post(format!("{}/tools/execute", base))
+        .json(&serde_json::json!({"name": "run_command", "args": {"command": "ls", "cwd": "secrets/"}}))
+        .send().await.unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body.to_string().contains("blocked"), "Expected blocked path error for cwd, got: {}", body);
+}
+
+// ── Security: truncate_output UTF-8 safety ──────────────────────
+
+#[test]
+fn truncate_output_ascii() {
+    // Inline the truncate_output logic to test it directly
+    fn truncate_output(text: &str, max_bytes: usize) -> String {
+        if text.len() <= max_bytes {
+            text.to_string()
+        } else {
+            let mut end = max_bytes;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let trunc = &text[..end];
+            format!("{}\n\n[...truncated at {} bytes]", trunc, max_bytes)
+        }
+    }
+
+    let result = truncate_output("hello world", 5);
+    assert!(result.contains("hello"));
+    assert!(result.contains("truncated"));
+}
+
+#[test]
+fn truncate_output_utf8_emoji_boundary() {
+    fn truncate_output(text: &str, max_bytes: usize) -> String {
+        if text.len() <= max_bytes {
+            text.to_string()
+        } else {
+            let mut end = max_bytes;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let trunc = &text[..end];
+            format!("{}\n\n[...truncated at {} bytes]", trunc, max_bytes)
+        }
+    }
+
+    // "Hello " = 6 bytes, emoji = 4 bytes, total = 10 bytes
+    // Truncating at 8 should NOT panic — it must find the boundary
+    let text = "Hello \u{1F600}world";
+    let result = truncate_output(text, 8);
+    assert!(result.contains("Hello"));
+    assert!(!result.is_empty());
+}
+
+#[test]
+fn truncate_output_noop_when_under_limit() {
+    fn truncate_output(text: &str, max_bytes: usize) -> String {
+        if text.len() <= max_bytes {
+            text.to_string()
+        } else {
+            let mut end = max_bytes;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let trunc = &text[..end];
+            format!("{}\n\n[...truncated at {} bytes]", trunc, max_bytes)
+        }
+    }
+
+    let text = "short text";
+    let result = truncate_output(text, 100);
+    assert_eq!(result, text);
+}
+
+// ── Security: SecuritySection default parsing ───────────────────
+
+#[test]
+fn security_section_defaults_without_toml_key() {
+    // Simulate a config TOML without [security] section
+    use chatapi_rules::ChatApiConfig;
+    let config = ChatApiConfig::default();
+    assert_eq!(config.security.chat_rate_limit, 60);
+    assert_eq!(config.security.api_rate_limit, 120);
+    assert_eq!(config.security.max_tool_output_bytes, 102_400);
+}

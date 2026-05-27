@@ -26,6 +26,8 @@ pub struct AppState {
     pub events: EventBroadcaster,
     /// Pending tool calls awaiting user approval.
     pub pending_tools: Arc<tokio::sync::Mutex<HashMap<String, ToolCall>>>,
+    /// Multi-agent orchestrator (None if not configured).
+    pub orchestrator: Option<Arc<chatapi_agents::Orchestrator>>,
 }
 
 impl AppState {
@@ -44,6 +46,7 @@ impl AppState {
             mcp_clients: Arc::new(mcp_clients),
             events: EventBroadcaster::new(256),
             pending_tools: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            orchestrator: None,
         }
     }
 }

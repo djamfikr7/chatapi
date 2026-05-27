@@ -15,6 +15,7 @@ chatapi-sessions = { path = "../sessions" }
 chatapi-targets = { path = "../targets" }
 chatapi-tools = { path = "../tools" }
 chatapi-mcp = { path = "../mcp" }
+chatapi-agents = { path = "../agents" }
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true

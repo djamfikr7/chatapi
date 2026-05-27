@@ -167,9 +167,15 @@ async fn handle_non_streaming(
 
                 let config = state.config.read().await;
                 let working_dir = config.working_dir();
-                drop(config);
+                let max_output = config.security.max_tool_output_bytes;
 
                 for tc in tool_calls.iter() {
+                    // Enforce allowed_tools check
+                    if !filter::is_tool_allowed(&tc.function.name, &config) {
+                        warn!("Tool '{}' blocked by allowed_tools config", tc.function.name);
+                        continue;
+                    }
+
                     // Broadcast tool call to WS clients
                     state.events.send(WsEvent::ToolCall {
                         session_id: request_id.clone(),
@@ -180,6 +186,23 @@ async fn handle_non_streaming(
                     let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
+                    // Enforce blocked_paths on file-path arguments
+                    let path_blocked = ["path", "cwd"].iter().any(|key| {
+                        args.get(key)
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|p| filter::is_path_blocked(p, &config))
+                    });
+                    if path_blocked {
+                        warn!("Tool '{}' blocked: path in blocked_paths", tc.function.name);
+                        state.events.send(WsEvent::ToolResult {
+                            session_id: request_id.clone(),
+                            tool_name: tc.function.name.clone(),
+                            result: "Error: path blocked by config".to_string(),
+                            is_error: true,
+                        });
+                        continue;
+                    }
+
                     let ctx = ToolContext {
                         session_id: request_id.clone(),
                         working_dir: working_dir.clone(),
@@ -189,9 +212,9 @@ async fn handle_non_streaming(
                     let (result_text, is_error) = match state.tools.execute(&tc.function.name, args, &ctx).await {
                         Ok(result) => {
                             let text = match &result {
-                                chatapi_shared::traits::ToolResult::Text(t) => t.clone(),
+                                chatapi_shared::traits::ToolResult::Text(t) => truncate_output(t, max_output),
                                 chatapi_shared::traits::ToolResult::Diff { old, new, path } => {
-                                    format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new)
+                                    truncate_output(&format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new), max_output)
                                 }
                                 chatapi_shared::traits::ToolResult::Error { message, .. } => {
                                     format!("Error: {}", message)
@@ -210,6 +233,7 @@ async fn handle_non_streaming(
                         is_error,
                     });
                 }
+                drop(config);
 
                 let prompt_tokens = estimate_tokens(&format!("{:?}", &request.messages));
                 let mut resp = ChatCompletionResponse::new_tool_calls(
@@ -602,8 +626,22 @@ pub async fn execute_tool(
     let args = body.get("args").cloned()
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
+    // Enforce allowed_tools check
     let config = state.config.read().await;
+    if !chatapi_rules::filter::is_tool_allowed(name, &config) {
+        return Err(ChatApiError::InvalidRequest(format!("Tool '{}' is not allowed by config", name)));
+    }
+
+    // Enforce blocked_paths on file-path arguments (path, cwd)
+    for key in &["path", "cwd"] {
+        if let Some(p) = args.get(*key).and_then(|v| v.as_str()) {
+            if chatapi_rules::filter::is_path_blocked(p, &config) {
+                return Err(ChatApiError::InvalidRequest(format!("Path '{}' is blocked by config", p)));
+            }
+        }
+    }
     let working_dir = config.working_dir();
+    let max_output = config.security.max_tool_output_bytes;
     drop(config);
 
     let ctx = chatapi_shared::traits::ToolContext {
@@ -615,9 +653,9 @@ pub async fn execute_tool(
     match state.tools.execute(name, args, &ctx).await {
         Ok(result) => {
             let (text, is_error) = match &result {
-                chatapi_shared::traits::ToolResult::Text(t) => (t.clone(), false),
+                chatapi_shared::traits::ToolResult::Text(t) => (truncate_output(t, max_output), false),
                 chatapi_shared::traits::ToolResult::Diff { old, new, path } => {
-                    (format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new), false)
+                    (truncate_output(&format!("Diff for {}:\n--- old\n{}\n+++ new\n{}", path.display(), old, new), max_output), false)
                 }
                 chatapi_shared::traits::ToolResult::Error { message, .. } => {
                     (format!("Error: {}", message), true)
@@ -629,6 +667,124 @@ pub async fn execute_tool(
             })))
         }
         Err(e) => Err(ChatApiError::AutomationFailure(format!("Tool error: {}", e))),
+    }
+}
+
+// ── Agent endpoints ──────────────────────────────────────────────
+
+/// POST /agents/tasks — submit a high-level task to the orchestrator.
+pub async fn agent_submit_task(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let orch = state.orchestrator.as_ref()
+        .ok_or_else(|| ChatApiError::InvalidRequest("Orchestrator not configured".to_string()))?;
+
+    let description = body.get("description")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ChatApiError::InvalidRequest("description required".to_string()))?
+        .to_string();
+
+    let task_id = orch.submit_task(description).await
+        .map_err(|e| ChatApiError::AutomationFailure(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "task_id": task_id })))
+}
+
+/// GET /agents/tasks — list all tasks.
+pub async fn agent_list_tasks(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let orch = state.orchestrator.as_ref()
+        .ok_or_else(|| ChatApiError::InvalidRequest("Orchestrator not configured".to_string()))?;
+
+    let tasks = orch.list_tasks().await;
+    let tasks_json: Vec<serde_json::Value> = tasks.iter().map(|t| {
+        serde_json::json!({
+            "id": t.id,
+            "description": t.description,
+            "status": format!("{:?}", t.status),
+            "steps": t.steps.len(),
+            "created_at": t.created_at.to_rfc3339(),
+            "updated_at": t.updated_at.to_rfc3339(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({ "tasks": tasks_json })))
+}
+
+/// GET /agents/tasks/:id — get task detail.
+pub async fn agent_get_task(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let orch = state.orchestrator.as_ref()
+        .ok_or_else(|| ChatApiError::InvalidRequest("Orchestrator not configured".to_string()))?;
+
+    let task = orch.get_task(&task_id).await
+        .ok_or_else(|| ChatApiError::InvalidRequest(format!("Task {} not found", task_id)))?;
+
+    let steps_json: Vec<serde_json::Value> = task.steps.iter().map(|s| {
+        serde_json::json!({
+            "id": s.id,
+            "description": s.description,
+            "assigned_to": format!("{:?}", s.assigned_to),
+            "status": format!("{:?}", s.status),
+            "result": s.result,
+            "error": s.error,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "id": task.id,
+        "description": task.description,
+        "status": format!("{:?}", task.status),
+        "steps": steps_json,
+        "created_at": task.created_at.to_rfc3339(),
+        "updated_at": task.updated_at.to_rfc3339(),
+    })))
+}
+
+/// POST /agents/tasks/:id/cancel — cancel a running task.
+pub async fn agent_cancel_task(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let orch = state.orchestrator.as_ref()
+        .ok_or_else(|| ChatApiError::InvalidRequest("Orchestrator not configured".to_string()))?;
+
+    orch.cancel_task(&task_id).await
+        .map_err(|e| ChatApiError::AutomationFailure(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "cancelled": true })))
+}
+
+/// GET /agents/capabilities — list available agent types.
+pub async fn agent_capabilities(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ChatApiError> {
+    let orch = state.orchestrator.as_ref()
+        .ok_or_else(|| ChatApiError::InvalidRequest("Orchestrator not configured".to_string()))?;
+
+    let roles = orch.capabilities().await;
+    let roles_json: Vec<String> = roles.iter().map(|r| format!("{:?}", r)).collect();
+
+    Ok(Json(serde_json::json!({ "agents": roles_json })))
+}
+
+// ── Helper functions ─────────────────────────────────────────────
+
+fn truncate_output(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        text.to_string()
+    } else {
+        // Find a valid UTF-8 boundary at or before max_bytes
+        let mut end = max_bytes;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let trunc = &text[..end];
+        format!("{}\n\n[...truncated at {} bytes]", trunc, max_bytes)
     }
 }
 
